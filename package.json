@@ -1,0 +1,28 @@
+{
+  "name": "vertik12",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Vertik12 — Global K-12 Student Information Management System. Powered by CloudPunkt.",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n api,web -c blue,magenta \"npm run dev -w @vertik12/api\" \"npm run dev -w @vertik12/web\"",
+    "dev:3005": "concurrently -n api,web -c blue,magenta \"npm run dev -w @vertik12/api\" \"npm run dev:3005 -w @vertik12/web\"",
+    "dev:api": "npm run dev -w @vertik12/api",
+    "dev:web": "npm run dev -w @vertik12/web",
+    "build": "npm run build -w @vertik12/web",
+    "db:generate": "npm run db:generate -w @vertik12/api",
+    "db:push": "npm run db:push -w @vertik12/api",
+    "db:seed": "npm run db:seed -w @vertik12/api",
+    "db:wipe": "npm run db:wipe -w @vertik12/api",
+    "db:use:sqlite": "npm run db:use:sqlite -w @vertik12/api",
+    "db:use:postgres": "npm run db:use:postgres -w @vertik12/api",
+    "setup": "npm install && npm run db:generate && npm run db:push && npm run db:seed",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

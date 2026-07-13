@@ -1,0 +1,570 @@
+// Vertik12 — data model.
+//
+// Dev database is SQLite (zero config). SQLite has no native enums, so
+// enum-like fields are Strings validated by the Zod schemas in
+// @vertik12/shared (single source of truth). To move to PostgreSQL:
+// change `provider` to "postgresql", set DATABASE_URL, and optionally
+// promote the commented value sets to real enums.
+//
+// All money fields are integer minor units (cents) to avoid float errors.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ============================== identity ==============================
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  firstName    String
+  lastName     String
+  role         String // SUPER_ADMIN | ADMIN | REGISTRAR | TEACHER | ACCOUNTANT | STUDENT | PARENT
+  isActive     Boolean  @default(true)
+  /// True while the account still uses a temporary/admin-issued password;
+  /// the web app forces a password change before anything else.
+  mustChangePassword Boolean @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  student          Student?
+  staff            Staff?
+  guardian         Guardian?
+  announcements    Announcement[]
+  refreshTokens    RefreshToken[]
+  sentMessages     Message[] @relation("sentMessages")
+  receivedMessages Message[] @relation("receivedMessages")
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+}
+
+// ============================== people ==============================
+
+model Student {
+  id           String    @id @default(cuid())
+  admissionNo  String    @unique // e.g. VRT-2026-0001
+  userId       String?   @unique
+  user         User?     @relation(fields: [userId], references: [id])
+  firstName    String
+  lastName     String
+  dateOfBirth  DateTime
+  gender       String // MALE | FEMALE | OTHER
+  gradeLevel   String // K | 1..12
+  status       String    @default("ACTIVE") // ACTIVE | GRADUATED | TRANSFERRED | WITHDRAWN | SUSPENDED
+  email        String?
+  phone        String?
+  addressLine1 String?
+  city         String?
+  country      String?
+  nationality  String?
+  bloodGroup   String?
+  medicalNotes String?
+  photoUrl     String?
+  admittedAt   DateTime  @default(now())
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  guardians             StudentGuardian[]
+  enrollments           Enrollment[]
+  attendance            AttendanceRecord[]
+  examResults           ExamResult[]
+  invoices              Invoice[]
+  assignmentSubmissions AssignmentSubmission[]
+
+  @@index([gradeLevel, status])
+}
+
+model Guardian {
+  id         String  @id @default(cuid())
+  userId     String? @unique
+  user       User?   @relation(fields: [userId], references: [id])
+  firstName  String
+  lastName   String
+  email      String?
+  phone      String
+  occupation String?
+
+  students StudentGuardian[]
+}
+
+model StudentGuardian {
+  studentId  String
+  guardianId String
+  relation   String // Mother | Father | Guardian | ...
+  isPrimary  Boolean @default(false)
+  student    Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  guardian   Guardian @relation(fields: [guardianId], references: [id], onDelete: Cascade)
+
+  @@id([studentId, guardianId])
+}
+
+model Staff {
+  id             String   @id @default(cuid())
+  staffNo        String   @unique // e.g. VRT-EMP-0001
+  userId         String   @unique
+  user           User     @relation(fields: [userId], references: [id])
+  staffType      String // TEACHING | NON_TEACHING
+  designation    String
+  department     String?
+  phone          String?
+  qualifications String?
+  status         String   @default("ACTIVE") // ACTIVE | ON_LEAVE | TERMINATED | RESIGNED
+  joinDate       DateTime
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  homeroomOf      ClassRoom[]
+  classSubjects   ClassSubject[]
+  timetableSlots  TimetableSlot[]
+  salaryStructure SalaryStructure?
+  payslips        Payslip[]
+}
+
+// ============================== academics ==============================
+
+model AcademicYear {
+  id        String   @id @default(cuid())
+  name      String   @unique // "2026-2027"
+  startDate DateTime
+  endDate   DateTime
+  isActive  Boolean  @default(false)
+
+  terms         Term[]
+  classRooms    ClassRoom[]
+  enrollments   Enrollment[]
+  feeStructures FeeStructure[]
+}
+
+model Term {
+  id             String       @id @default(cuid())
+  name           String // "Term 1"
+  academicYearId String
+  academicYear   AcademicYear @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+  startDate      DateTime
+  endDate        DateTime
+
+  exams Exam[]
+
+  @@unique([academicYearId, name])
+}
+
+model ClassRoom {
+  id                String       @id @default(cuid())
+  name              String // "Grade 5 — A", "KG1 — B (West Campus)"
+  gradeLevel        String // K | 1..12
+  section           String       @default("A")
+  /// Optional campus/branch label for multi-branch schools.
+  branch            String?
+  capacity          Int          @default(30)
+  academicYearId    String
+  academicYear      AcademicYear @relation(fields: [academicYearId], references: [id])
+  homeroomTeacherId String?
+  homeroomTeacher   Staff?       @relation(fields: [homeroomTeacherId], references: [id])
+
+  enrollments    Enrollment[]
+  classSubjects  ClassSubject[]
+  attendance     AttendanceRecord[]
+  timetableSlots TimetableSlot[]
+
+  // Multiple sections/branches per grade are allowed; only the display
+  // name must be unique within a year.
+  @@unique([academicYearId, name])
+}
+
+model Subject {
+  id          String  @id @default(cuid())
+  code        String  @unique // "MATH", "CALC12"
+  name        String
+  description String?
+  /// Grade this subject is taught in (K-12). Null = offered in all grades.
+  /// Subjects are created per-grade by the SUPER_ADMIN.
+  gradeLevel  String?
+
+  classSubjects  ClassSubject[]
+  examResults    ExamResult[]
+  timetableSlots TimetableSlot[]
+  attendance     AttendanceRecord[]
+}
+
+model ClassSubject {
+  id          String    @id @default(cuid())
+  classRoomId String
+  classRoom   ClassRoom @relation(fields: [classRoomId], references: [id], onDelete: Cascade)
+  subjectId   String
+  subject     Subject   @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  teacherId   String?
+  teacher     Staff?    @relation(fields: [teacherId], references: [id])
+
+  assignments Assignment[]
+
+  @@unique([classRoomId, subjectId])
+}
+
+// ============================== assignments ==============================
+
+/// Homework/assignment a teacher sends to one of their classes. Parents see
+/// it in the portal and submit on their child's behalf.
+model Assignment {
+  id             String       @id @default(cuid())
+  classSubjectId String
+  classSubject   ClassSubject @relation(fields: [classSubjectId], references: [id], onDelete: Cascade)
+  title          String
+  instructions   String
+  dueDate        DateTime
+  createdById    String // user id of the teacher
+  createdAt      DateTime     @default(now())
+
+  submissions AssignmentSubmission[]
+}
+
+model AssignmentSubmission {
+  id            String     @id @default(cuid())
+  assignmentId  String
+  assignment    Assignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  studentId     String
+  student       Student    @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  submittedById String // user id (parent)
+  /// Key of the submission body in the document store (MongoDB/DynamoDB in
+  /// production, in-process store in dev) — large content stays out of SQL.
+  contentRef    String
+  linkUrl       String?
+  submittedAt   DateTime   @default(now())
+  feedback      String? // teacher's feedback after review
+  grade         String?
+
+  @@unique([assignmentId, studentId])
+}
+
+model Enrollment {
+  id             String       @id @default(cuid())
+  studentId      String
+  student        Student      @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  classRoomId    String
+  classRoom      ClassRoom    @relation(fields: [classRoomId], references: [id])
+  academicYearId String
+  academicYear   AcademicYear @relation(fields: [academicYearId], references: [id])
+  rollNo         Int?
+  status         String       @default("ENROLLED") // ENROLLED | PROMOTED | COMPLETED | WITHDRAWN
+  createdAt      DateTime     @default(now())
+
+  @@unique([studentId, academicYearId])
+}
+
+model TimetableSlot {
+  id          String    @id @default(cuid())
+  classRoomId String
+  classRoom   ClassRoom @relation(fields: [classRoomId], references: [id], onDelete: Cascade)
+  subjectId   String
+  subject     Subject   @relation(fields: [subjectId], references: [id])
+  teacherId   String?
+  teacher     Staff?    @relation(fields: [teacherId], references: [id])
+  dayOfWeek   String // MONDAY..SUNDAY
+  startTime   String // "08:00"
+  endTime     String // "08:45"
+}
+
+/// Admin-managed assessment types (Term Exam, Final Exam, Quiz, …).
+/// Exam.category stores the type's name; defaults are seeded.
+model ExamType {
+  id        String @id @default(cuid())
+  name      String @unique
+  sortOrder Int    @default(0)
+}
+
+// ============================== attendance ==============================
+
+model AttendanceRecord {
+  id          String    @id @default(cuid())
+  studentId   String
+  student     Student   @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  classRoomId String
+  classRoom   ClassRoom @relation(fields: [classRoomId], references: [id])
+  /// Attendance is per subject/period: teachers mark the subject they teach.
+  /// Null = general/homeroom attendance (admin/registrar).
+  subjectId   String?
+  subject     Subject?  @relation(fields: [subjectId], references: [id])
+  date        DateTime // normalized to midnight UTC
+  status      String // PRESENT | ABSENT | LATE | EXCUSED
+  note        String?
+  markedById  String? // user id of the teacher who marked it
+  createdAt   DateTime  @default(now())
+
+  @@unique([studentId, date, subjectId])
+  @@index([classRoomId, date])
+  @@index([studentId, date])
+}
+
+// ============================== exams & grades ==============================
+
+model Exam {
+  id        String    @id @default(cuid())
+  name      String
+  /// ASSIGNMENT | WEEKLY_TEST | TERM_EXAM | FINAL_EXAM | OTHER
+  category  String    @default("OTHER")
+  termId    String
+  term      Term      @relation(fields: [termId], references: [id], onDelete: Cascade)
+  weight    Float     @default(100) // % contribution to the final grade
+  startDate DateTime?
+  createdBy String? // user id (teacher or admin)
+  createdAt DateTime  @default(now())
+
+  results     ExamResult[]
+  submissions ResultSubmission[]
+}
+
+/// Teacher → Registrar result sign-off. No row = DRAFT (teacher can edit).
+/// SUBMITTED locks the marks pending review; APPROVED locks them for good;
+/// REJECTED reopens editing until the teacher resubmits.
+model ResultSubmission {
+  id           String    @id @default(cuid())
+  examId       String
+  exam         Exam      @relation(fields: [examId], references: [id], onDelete: Cascade)
+  classRoomId  String
+  subjectId    String
+  teacherId    String? // staff id of the submitting teacher
+  status       String    @default("SUBMITTED") // SUBMITTED | APPROVED | REJECTED
+  note         String? // registrar's note on approve/reject
+  submittedAt  DateTime  @default(now())
+  reviewedAt   DateTime?
+  reviewedById String? // user id of the registrar/admin
+
+  @@unique([examId, classRoomId, subjectId])
+}
+
+model ExamResult {
+  id        String  @id @default(cuid())
+  examId    String
+  exam      Exam    @relation(fields: [examId], references: [id], onDelete: Cascade)
+  studentId String
+  student   Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  subjectId String
+  subject   Subject @relation(fields: [subjectId], references: [id])
+  marks     Float
+  maxMarks  Float   @default(100)
+  grade     String // computed letter grade, e.g. "A-"
+  remark    String?
+
+  @@unique([examId, studentId, subjectId])
+}
+
+// ============================== finance ==============================
+
+model FeeStructure {
+  id             String       @id @default(cuid())
+  name           String
+  gradeLevel     String? // null = applies to all grades
+  amount         Int // cents
+  frequency      String // ONE_TIME | MONTHLY | TERMLY | ANNUAL
+  description    String?
+  academicYearId String
+  academicYear   AcademicYear @relation(fields: [academicYearId], references: [id])
+  isActive       Boolean      @default(true)
+
+  invoiceItems InvoiceItem[]
+}
+
+model Invoice {
+  id        String   @id @default(cuid())
+  number    String   @unique // INV-2026-000123
+  studentId String
+  student   Student  @relation(fields: [studentId], references: [id])
+  currency  String   @default("USD")
+  status    String   @default("ISSUED") // DRAFT | ISSUED | PARTIALLY_PAID | PAID | OVERDUE | VOID
+  issueDate DateTime @default(now())
+  dueDate   DateTime
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items    InvoiceItem[]
+  payments Payment[]
+
+  @@index([studentId, status])
+}
+
+model InvoiceItem {
+  id             String        @id @default(cuid())
+  invoiceId      String
+  invoice        Invoice       @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  description    String
+  amount         Int // cents
+  feeStructureId String?
+  feeStructure   FeeStructure? @relation(fields: [feeStructureId], references: [id])
+}
+
+model Payment {
+  id          String    @id @default(cuid())
+  invoiceId   String
+  invoice     Invoice   @relation(fields: [invoiceId], references: [id])
+  amount      Int // cents
+  method      String // CARD | BANK_TRANSFER | CASH | CHEQUE | MOBILE_MONEY
+  status      String    @default("PENDING") // PENDING | SUCCEEDED | FAILED | REFUNDED
+  provider    String    @default("MANUAL") // MANUAL | STRIPE | MOCK
+  providerRef String? // Stripe session/intent id or manual receipt no
+  paidAt      DateTime?
+  recordedBy  String? // user id
+  createdAt   DateTime  @default(now())
+
+  @@index([invoiceId])
+}
+
+// ============================== payroll ==============================
+
+model SalaryStructure {
+  id            String   @id @default(cuid())
+  staffId       String   @unique
+  staff         Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  basicSalary   Int // cents per pay period
+  /// MONTHLY | BIWEEKLY — how often this staff member is paid.
+  payFrequency  String   @default("MONTHLY")
+  currency      String   @default("USD")
+  allowances    String   @default("[]") // JSON: [{ name, amount }]
+  deductions    String   @default("[]") // JSON: [{ name, amount }]
+  effectiveFrom DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model PayrollRun {
+  id         String    @id @default(cuid())
+  month      Int // 1-12
+  year       Int
+  status     String    @default("DRAFT") // DRAFT | APPROVED | PAID
+  notes      String?
+  createdBy  String? // user id
+  approvedAt DateTime?
+  paidAt     DateTime?
+  createdAt  DateTime  @default(now())
+
+  payslips Payslip[]
+
+  @@unique([month, year])
+}
+
+model Payslip {
+  id         String     @id @default(cuid())
+  runId      String
+  run        PayrollRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  staffId    String
+  staff      Staff      @relation(fields: [staffId], references: [id])
+  basicSalary Int
+  allowances String // JSON snapshot: [{ name, amount }]
+  deductions String // JSON snapshot: [{ name, amount }]
+  /// One-off bonus the admin adds to this payslip while the run is a draft.
+  bonus      Int    @default(0)
+  gross      Int
+  totalDeductions Int
+  net        Int
+  currency   String     @default("USD")
+  status     String     @default("PENDING") // PENDING | PAID
+  paidAt     DateTime?
+
+  @@unique([runId, staffId])
+}
+
+// ============================== administration ==============================
+
+/// Immutable trail of every mutating API call (who did what, when).
+/// Written fire-and-forget by the audit middleware; read by SUPER_ADMIN.
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  userEmail String?
+  role      String?
+  method    String // POST | PUT | PATCH | DELETE
+  path      String // e.g. /api/v1/students/abc123
+  action    String // human label, e.g. "students.create"
+  status    Int // HTTP status of the response
+  ip        String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([userId])
+}
+
+/// Singleton (id = "school") — profile & policies editable by SUPER_ADMIN.
+model SchoolSettings {
+  id                    String  @id @default("school")
+  schoolName            String  @default("Vertik12 Academy")
+  motto                 String?
+  logoUrl               String?
+  address               String?
+  phone                 String?
+  email                 String?
+  currency              String  @default("USD")
+  timezone              String  @default("UTC")
+  passwordMinLength     Int     @default(8)
+  sessionTimeoutMinutes Int     @default(60)
+  /// Discount applied when a family pays the whole year at once (0-100).
+  yearlyDiscountPercent Float   @default(0)
+  updatedAt             DateTime @updatedAt
+}
+
+/// Admin-configurable grading scale (Super Admin › Grading). Percentages are
+/// matched against the highest `minPercent` they reach, e.g. 95 → A+ if the
+/// school sets A+ at 95, or → A where the country uses 90 = A.
+model GradeBand {
+  id         String @id @default(cuid())
+  letter     String // "A+", "A", "B-", …
+  minPercent Float // lower bound (inclusive), 0-100
+  points     Float // GPA points for this band
+  sortOrder  Int // display order, highest band first
+
+  @@unique([minPercent])
+}
+
+/// Registrar sign-off on a term report card before it is printed/released.
+model ReportCardApproval {
+  id           String   @id @default(cuid())
+  studentId    String
+  termId       String
+  approvedById String
+  approvedAt   DateTime @default(now())
+
+  @@unique([studentId, termId])
+}
+
+// ============================== messaging ==============================
+
+/// Internal email-like messaging between staff accounts
+/// (registrar ↔ teachers ↔ administrators).
+model Message {
+  id          String    @id @default(cuid())
+  senderId    String
+  sender      User      @relation("sentMessages", fields: [senderId], references: [id])
+  recipientId String
+  recipient   User      @relation("receivedMessages", fields: [recipientId], references: [id])
+  subject     String
+  body        String
+  readAt      DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([recipientId, readAt])
+  @@index([senderId])
+}
+
+// ============================== communication ==============================
+
+model Announcement {
+  id        String   @id @default(cuid())
+  title     String
+  body      String
+  audience  String   @default("ALL") // ALL | STAFF | STUDENTS | PARENTS
+  pinned    Boolean  @default(false)
+  authorId  String
+  author    User     @relation(fields: [authorId], references: [id])
+  createdAt DateTime @default(now())
+}

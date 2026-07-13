@@ -1,0 +1,78 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  @apply antialiased;
+}
+
+/* ==========================================================================
+   Dark mode
+   The app is written against the light slate palette; this layer remaps
+   those utilities inside `.dark` so every portal (admin, teacher, parent…)
+   inherits dark mode without per-page changes. Toggle lives in the top bar.
+   ========================================================================== */
+
+.dark body { background-color: #0b1220; color: #e2e8f0; }
+
+/* surfaces */
+.dark .bg-white { background-color: #16202f; }
+.dark .bg-white\/80 { background-color: rgba(11, 18, 32, 0.85); }
+.dark .bg-slate-50 { background-color: #0b1220; }
+.dark .bg-slate-100 { background-color: #1e293b; }
+.dark .hover\:bg-slate-50:hover { background-color: #1b2637; }
+.dark .hover\:bg-slate-100:hover { background-color: #253247; }
+.dark .disabled\:bg-slate-50:disabled { background-color: #101a2a; }
+
+/* text */
+.dark .text-slate-900 { color: #f1f5f9; }
+.dark .text-slate-800 { color: #e2e8f0; }
+.dark .text-slate-700 { color: #cbd5e1; }
+.dark .text-slate-600 { color: #a8b6c8; }
+.dark .text-slate-500 { color: #8b9bb0; }
+.dark .text-slate-400 { color: #64748b; }
+.dark .hover\:text-slate-600:hover { color: #cbd5e1; }
+.dark .hover\:text-slate-800:hover { color: #e2e8f0; }
+.dark .placeholder-slate-400::placeholder { color: #526078; }
+
+/* borders & dividers */
+.dark .border-slate-100 { border-color: #1e293b; }
+.dark .border-slate-200 { border-color: #263244; }
+.dark .border-slate-300 { border-color: #334155; }
+.dark .divide-slate-100 > :not([hidden]) ~ :not([hidden]) { border-color: #1e293b; }
+.dark .border-slate-800 { border-color: #cbd5e1; } /* report-card letterhead rule */
+
+/* brand accents */
+.dark .bg-brand-50 { background-color: rgba(99, 102, 241, 0.16); }
+.dark .bg-brand-100 { background-color: rgba(99, 102, 241, 0.25); }
+.dark .text-brand-700 { color: #a5b4fc; }
+.dark .text-brand-600 { color: #a5b4fc; }
+
+/* tinted notices & badges — dim the light-tinted chips */
+.dark .bg-emerald-50 { background-color: rgba(16, 185, 129, 0.14); }
+.dark .bg-amber-50 { background-color: rgba(245, 158, 11, 0.14); }
+.dark .bg-rose-50 { background-color: rgba(244, 63, 94, 0.14); }
+.dark .bg-sky-50 { background-color: rgba(14, 165, 233, 0.14); }
+.dark .bg-slate-200 { background-color: #263244; }
+.dark .border-slate-50 { border-color: #101a2a; }
+.dark .text-emerald-800, .dark .text-emerald-700 { color: #6ee7b7; }
+.dark .text-amber-800, .dark .text-amber-700 { color: #fcd34d; }
+.dark .text-rose-800, .dark .text-rose-700 { color: #fda4af; }
+.dark .text-sky-800, .dark .text-sky-700 { color: #7dd3fc; }
+/* colored accents used on plain (non-tinted) backgrounds */
+.dark .text-rose-600 { color: #fb7185; }
+.dark .text-emerald-600 { color: #34d399; }
+.dark .text-amber-600 { color: #fbbf24; }
+.dark .text-sky-600 { color: #38bdf8; }
+.dark .border-emerald-200 { border-color: rgba(16, 185, 129, 0.35); }
+.dark .border-amber-200 { border-color: rgba(245, 158, 11, 0.35); }
+.dark .border-rose-200 { border-color: rgba(244, 63, 94, 0.35); }
+.dark .border-sky-200 { border-color: rgba(14, 165, 233, 0.35); }
+
+/* shadows read as glows on dark — soften them */
+.dark .shadow-sm, .dark .shadow-md, .dark .shadow-xl { box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5); }
+
+/* printing always uses the light theme */
+@media print {
+  .dark body { background-color: #fff; color: #000; }
+}

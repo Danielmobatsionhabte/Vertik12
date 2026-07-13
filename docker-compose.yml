@@ -1,0 +1,33 @@
+# Local production-parity stack: PostgreSQL (primary DB) + MongoDB (document store).
+#
+#   docker compose up -d
+#   npm run db:use:postgres
+#   # apps/api/.env → DATABASE_URL="postgresql://vertik12:vertik12@localhost:5432/vertik12"
+#   #                 DOCUMENT_STORE=mongodb
+#   npm run db:push && npm run db:seed
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: vertik12
+      POSTGRES_PASSWORD: vertik12
+      POSTGRES_DB: vertik12
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vertik12"]
+      interval: 5s
+      retries: 10
+
+  mongodb:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodata:/data/db
+
+volumes:
+  pgdata:
+  mongodata:

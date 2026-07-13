@@ -1,0 +1,123 @@
+import type { CreateStaffInput, PaginationQuery } from "@vertik12/shared";
+import type { Prisma } from "@prisma/client";
+import crypto from "node:crypto";
+import { prisma } from "../../lib/prisma";
+import { ApiError } from "../../lib/errors";
+import { hashPassword } from "../../lib/auth-tokens";
+import { paginate, toSkipTake } from "../../lib/pagination";
+
+async function nextStaffNo(): Promise<string> {
+  const count = await prisma.staff.count();
+  return `VRT-EMP-${String(count + 1).padStart(4, "0")}`;
+}
+
+export async function listStaff(q: PaginationQuery & { staffType?: string; status?: string }) {
+  const where: Prisma.StaffWhereInput = {
+    ...(q.staffType ? { staffType: q.staffType } : {}),
+    ...(q.status ? { status: q.status } : {}),
+    ...(q.search
+      ? {
+          OR: [
+            { staffNo: { contains: q.search } },
+            { designation: { contains: q.search } },
+            { user: { is: { OR: [{ firstName: { contains: q.search } }, { lastName: { contains: q.search } }] } } },
+          ],
+        }
+      : {}),
+  };
+  const [items, total] = await Promise.all([
+    prisma.staff.findMany({
+      where,
+      ...toSkipTake(q),
+      orderBy: { staffNo: "asc" },
+      include: {
+        user: { select: { email: true, firstName: true, lastName: true, role: true, isActive: true } },
+        salaryStructure: { select: { basicSalary: true, currency: true } },
+      },
+    }),
+    prisma.staff.count({ where }),
+  ]);
+  return paginate(items, total, q);
+}
+
+export async function getStaff(id: string) {
+  const staff = await prisma.staff.findUnique({
+    where: { id },
+    include: {
+      user: { select: { email: true, firstName: true, lastName: true, role: true, isActive: true } },
+      salaryStructure: true,
+      classSubjects: { include: { classRoom: true, subject: true } },
+      homeroomOf: true,
+      payslips: { include: { run: true }, orderBy: { id: "desc" }, take: 12 },
+    },
+  });
+  if (!staff) throw ApiError.notFound("Staff member");
+  return staff;
+}
+
+/**
+ * Creates the login account and the staff profile together.
+ * Returns a generated temporary password when none was supplied so the
+ * admin can hand it to the new hire (they change it on first login).
+ */
+export async function createStaff(input: CreateStaffInput) {
+  const tempPassword = input.password ?? `Vrt-${crypto.randomBytes(6).toString("base64url")}`;
+  const { password: _password, email, role, firstName, lastName, ...profile } = input;
+
+  const staff = await prisma.$transaction(async (tx) => {
+    const user = await tx.user.create({
+      data: {
+        email: email.toLowerCase(),
+        passwordHash: await hashPassword(tempPassword),
+        firstName,
+        lastName,
+        role,
+        // First sign-in uses a password someone else has seen — force a change.
+        mustChangePassword: true,
+      },
+    });
+    return tx.staff.create({
+      data: { ...profile, userId: user.id, staffNo: await nextStaffNo() },
+      include: { user: { select: { email: true, firstName: true, lastName: true, role: true } } },
+    });
+  });
+
+  return { staff, temporaryPassword: input.password ? undefined : tempPassword };
+}
+
+export async function updateStaff(id: string, input: Record<string, unknown>) {
+  const { firstName, lastName, ...profile } = input as { firstName?: string; lastName?: string } & Record<string, unknown>;
+  const staff = await prisma.staff.update({ where: { id }, data: profile });
+  if (firstName || lastName) {
+    await prisma.user.update({
+      where: { id: staff.userId },
+      data: { ...(firstName ? { firstName } : {}), ...(lastName ? { lastName } : {}) },
+    });
+  }
+  return getStaff(id);
+}
+
+/** Off-boarding: profile marked TERMINATED/RESIGNED and the login disabled. */
+export async function deactivateStaff(id: string, status: "TERMINATED" | "RESIGNED") {
+  const staff = await prisma.staff.update({ where: { id }, data: { status } });
+  await prisma.user.update({ where: { id: staff.userId }, data: { isActive: false } });
+  return staff;
+}
+
+/**
+ * Grant/revoke a staff member's web access (their login) without changing
+ * employment status. Admins cannot revoke the registrar's access — only the
+ * Super Admin can (via Administration › Users).
+ */
+export async function setWebAccess(id: string, isActive: boolean, actorRole: string) {
+  const staff = await prisma.staff.findUnique({ where: { id }, include: { user: true } });
+  if (!staff) throw ApiError.notFound("Staff member");
+  if (actorRole !== "SUPER_ADMIN" && ["REGISTRAR", "SUPER_ADMIN"].includes(staff.user.role) && !isActive) {
+    throw ApiError.forbidden("Only the Super Admin can revoke the registrar's web access");
+  }
+  await prisma.user.update({ where: { id: staff.userId }, data: { isActive } });
+  if (!isActive) {
+    await prisma.refreshToken.updateMany({ where: { userId: staff.userId, revokedAt: null }, data: { revokedAt: new Date() } });
+  }
+  return getStaff(id);
+}

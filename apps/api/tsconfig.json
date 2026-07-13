@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": ["node"],
+    "noEmit": true,
+    // Express guarantees route params exist once a route matches;
+    // without this, every req.params.id reads as string | undefined.
+    "noUncheckedIndexedAccess": false
+  },
+  "include": ["src", "prisma/seed.ts"]
+}
