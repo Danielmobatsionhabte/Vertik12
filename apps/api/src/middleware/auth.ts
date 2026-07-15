@@ -12,6 +12,30 @@ declare module "express-serve-static-core" {
 }
 
 /**
+ * Daily-visitor tracking for the admin dashboard: one row per user per day.
+ * The in-process cache keeps it to a single DB write per user per day, so
+ * the per-request overhead is a Set lookup. Fire-and-forget — a stats
+ * write must never fail a real request.
+ */
+const visitCache = new Set<string>();
+setInterval(() => visitCache.clear(), 6 * 60 * 60 * 1000).unref(); // guard the Set's size across day rollovers
+
+function recordVisit(userId: string, role: string) {
+  const today = new Date();
+  const date = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+  const key = `${userId}:${date.toISOString().slice(0, 10)}`;
+  if (visitCache.has(key)) return;
+  visitCache.add(key);
+  prisma.dailyVisit
+    .upsert({
+      where: { userId_date: { userId, date } },
+      create: { userId, role, date },
+      update: {},
+    })
+    .catch(() => visitCache.delete(key)); // retry on the next request
+}
+
+/**
  * Requires a valid `Authorization: Bearer <token>` header.
  *
  * The JWT alone is not trusted for account status: the user row is checked on
@@ -35,6 +59,7 @@ export function authenticate(req: Request, _res: Response, next: NextFunction) {
         throw ApiError.unauthorized("Account is disabled");
       }
       req.user = { ...payload, role: user.role as Role };
+      recordVisit(payload.sub, user.role);
       next();
     })
     .catch(next);

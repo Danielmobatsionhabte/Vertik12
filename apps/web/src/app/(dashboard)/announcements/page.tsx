@@ -1,10 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { ANNOUNCEMENT_AUDIENCES } from "@vertik12/shared";
-import { get, post, ApiClientError } from "@/lib/api";
+import { ANNOUNCEMENT_AUDIENCES, type Paginated } from "@vertik12/shared";
+import { get, post, getSession, ApiClientError } from "@/lib/api";
 import { formatDate, humanize } from "@/lib/format";
 import { Badge, Button, Card, ErrorNote, Field, Input, Modal, PageHeader, Select, Spinner } from "@/components/ui";
+import { Pager } from "@/components/data-table";
 
 interface AnnouncementRow {
   id: string;
@@ -17,16 +18,30 @@ interface AnnouncementRow {
 }
 
 export default function AnnouncementsPage() {
-  const [items, setItems] = useState<AnnouncementRow[] | null>(null);
+  const [data, setData] = useState<Paginated<AnnouncementRow> | null>(null);
+  const [page, setPage] = useState(1);
   const [showAdd, setShowAdd] = useState(false);
   const [form, setForm] = useState({ title: "", body: "", audience: "ALL", pinned: false });
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  // Parents and students are read-only here: they see announcements
+  // addressed to them but can never publish (the API enforces this too).
+  const role = getSession()?.user.role;
+  const canPublish = role === "SUPER_ADMIN" || role === "ADMIN" || role === "REGISTRAR" || role === "TEACHER";
 
-  const load = useCallback(() => get<AnnouncementRow[]>("/announcements").then(setItems), []);
+  const load = useCallback(
+    () => get<Paginated<AnnouncementRow>>(`/announcements?page=${page}&pageSize=10`).then(setData),
+    [page],
+  );
   useEffect(() => {
-    void load();
+    void load().then(() =>
+      // Reading the page clears the "new announcements" badge in the sidebar.
+      post("/announcements/mark-seen")
+        .then(() => window.dispatchEvent(new Event("vertik12:badges-refresh")))
+        .catch(() => undefined),
+    );
   }, [load]);
+  const items = data?.items ?? null;
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -49,7 +64,7 @@ export default function AnnouncementsPage() {
       <PageHeader
         title="Announcements"
         subtitle="School-wide or audience-targeted notices"
-        actions={<Button onClick={() => setShowAdd(true)}>+ New announcement</Button>}
+        actions={canPublish ? <Button onClick={() => setShowAdd(true)}>+ New announcement</Button> : undefined}
       />
 
       {!items ? (
@@ -72,6 +87,7 @@ export default function AnnouncementsPage() {
             </Card>
           ))}
           {items.length === 0 && <p className="py-16 text-center text-sm text-slate-400">No announcements yet.</p>}
+          {data && <Pager page={data.page} totalPages={data.totalPages} onPage={setPage} />}
         </div>
       )}
 

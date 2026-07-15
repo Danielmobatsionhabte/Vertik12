@@ -4,7 +4,7 @@ import { prisma } from "../../lib/prisma";
 import { ApiError } from "../../lib/errors";
 import { env } from "../../config/env";
 import { paginate, toSkipTake } from "../../lib/pagination";
-import { paymentProvider } from "./payment-provider";
+import { paymentProvider, stripeProviderOrNull } from "./payment-provider";
 
 // ============================ fee structures ============================
 
@@ -18,6 +18,16 @@ export const createFeeStructure = (input: {
   name: string; gradeLevel?: string; amount: number; frequency: string;
   academicYearId: string; description?: string;
 }) => prisma.feeStructure.create({ data: input });
+
+/**
+ * Retire a fee structure. Invoice items keep their reference, so history
+ * stays intact — the fee simply stops applying to new collections.
+ */
+export async function deactivateFeeStructure(id: string) {
+  const fee = await prisma.feeStructure.findUnique({ where: { id } });
+  if (!fee) throw ApiError.notFound("Fee structure");
+  return prisma.feeStructure.update({ where: { id }, data: { isActive: false } });
+}
 
 // ============================== invoices ==============================
 
@@ -171,6 +181,7 @@ export async function recordManualPayment(input: RecordPaymentInput, recordedBy:
       status: "SUCCEEDED",
       provider: "MANUAL",
       providerRef: input.reference,
+      note: input.note || null,
       paidAt: input.paidAt ?? new Date(),
       recordedBy,
     },
@@ -186,8 +197,8 @@ export async function createCheckout(invoiceId: string, urls: { successUrl?: str
 
   // CORS_ORIGIN may list several origins — the first is the canonical web app.
   const webOrigin = env.CORS_ORIGIN.split(",")[0];
-  const successUrl = urls.successUrl ?? `${webOrigin}/finance/invoices?paid=${inv.number}`;
-  const cancelUrl = urls.cancelUrl ?? `${webOrigin}/finance/invoices`;
+  const successUrl = urls.successUrl ?? `${webOrigin}/finance?paid=${inv.number}`;
+  const cancelUrl = urls.cancelUrl ?? `${webOrigin}/finance`;
 
   const session = await paymentProvider.createCheckout({
     invoiceNumber: inv.number,
@@ -224,15 +235,58 @@ export async function confirmCheckout(sessionId: string) {
   await refreshInvoiceStatus(payment.invoiceId);
 }
 
+/**
+ * Redirect-based confirmation: when the payer lands back on the app with
+ * `?session_id=…`, the web client posts it here. The payment is only marked
+ * SUCCEEDED after Stripe itself confirms the session was paid — the client
+ * is never trusted. This makes sandbox/local testing work without exposing
+ * a public webhook URL (the webhook stays as the production-grade path).
+ */
+export async function confirmCheckoutSession(sessionId: string) {
+  const payment = await prisma.payment.findFirst({
+    where: { providerRef: sessionId },
+    include: { invoice: { select: { number: true } } },
+  });
+  if (!payment) throw ApiError.notFound("Payment for this checkout session");
+
+  if (payment.status === "SUCCEEDED") {
+    return { status: "SUCCEEDED", invoiceNumber: payment.invoice.number, amount: payment.amount };
+  }
+  if (payment.status !== "PENDING") {
+    return { status: payment.status, invoiceNumber: payment.invoice.number, amount: payment.amount };
+  }
+
+  if (payment.provider === "STRIPE") {
+    const stripe = stripeProviderOrNull();
+    if (!stripe) throw ApiError.badRequest("Stripe is not configured on the server");
+    const paid = await stripe.isSessionPaid(sessionId);
+    if (!paid) {
+      return { status: "PENDING", invoiceNumber: payment.invoice.number, amount: payment.amount };
+    }
+    await prisma.payment.update({ where: { id: payment.id }, data: { status: "SUCCEEDED", paidAt: new Date() } });
+    await refreshInvoiceStatus(payment.invoiceId);
+    return { status: "SUCCEEDED", invoiceNumber: payment.invoice.number, amount: payment.amount };
+  }
+
+  // Mock sessions are auto-confirmed at creation; a PENDING mock session
+  // means something went wrong — report it as-is.
+  return { status: payment.status, invoiceNumber: payment.invoice.number, amount: payment.amount };
+}
+
 // ========================= registrar collection =========================
 
 /**
- * Registrar cashier flow: bill + collect in one step.
+ * Registrar/Admin cashier flow: bill + collect in one step. There is no
+ * due-date gate — families can pay whenever they come to the office.
  *
- *  - MONTHLY: one month of the grade's MONTHLY fee structures.
+ *  - MONTHLY: one month of the grade's MONTHLY fee structures (the
+ *    per-grade presets the administrator configured).
  *  - YEARLY: 12 months of MONTHLY fees + all ANNUAL fees, minus the
  *    yearly-payment discount the administrator configured in
  *    School settings (e.g. 10% off when a family pays the year at once).
+ *  - customAmount: overrides the preset entirely — the cashier types the
+ *    exact amount to charge (used when the school negotiates a different
+ *    figure, or no preset exists for the grade yet).
  *
  * Creates the invoice, applies the discount as an explicit line item, and
  * records the payment as SUCCEEDED — the receipt shows exactly what was
@@ -254,35 +308,48 @@ export async function collectPayment(input: CollectPaymentInput, recordedBy: str
     prisma.schoolSettings.findUnique({ where: { id: "school" } }),
   ]);
 
-  const monthly = fees.filter((f) => f.frequency === "MONTHLY");
-  const annual = fees.filter((f) => f.frequency === "ANNUAL");
-  if (input.period === "MONTHLY" && monthly.length === 0) {
-    throw ApiError.badRequest(`No monthly fee structures are defined for grade ${student.gradeLevel}`);
-  }
-  if (input.period === "YEARLY" && monthly.length === 0 && annual.length === 0) {
-    throw ApiError.badRequest(`No monthly or annual fee structures are defined for grade ${student.gradeLevel}`);
-  }
-
-  const items: Array<{ description: string; amount: number; feeStructureId?: string }> = [];
-  if (input.period === "MONTHLY") {
-    // Families can pay several months ahead at any time (no due-date gate).
-    const months = input.months ?? 1;
-    const label =
-      months === 1
+  const months = input.months ?? 1;
+  const periodLabel =
+    input.period === "YEARLY"
+      ? "Yearly (paid at once)"
+      : months === 1
         ? new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" })
         : `${months} months (paid in advance)`;
-    for (const f of monthly) items.push({ description: `${f.name} — ${label}`, amount: f.amount * months, feeStructureId: f.id });
+
+  const items: Array<{ description: string; amount: number; feeStructureId?: string }> = [];
+  let discountPercent = 0;
+
+  if (input.customAmount) {
+    // Cashier override: one explicit line, no preset math, no discount.
+    items.push({ description: `Fee payment (custom amount) — ${periodLabel}`, amount: input.customAmount });
   } else {
-    for (const f of monthly) items.push({ description: `${f.name} — 12 months`, amount: f.amount * 12, feeStructureId: f.id });
-    for (const f of annual) items.push({ description: f.name, amount: f.amount, feeStructureId: f.id });
+    const monthly = fees.filter((f) => f.frequency === "MONTHLY");
+    const annual = fees.filter((f) => f.frequency === "ANNUAL");
+    if (input.period === "MONTHLY" && monthly.length === 0) {
+      throw ApiError.badRequest(
+        `No monthly fee preset is defined for ${student.gradeLevel === "K" ? "Kindergarten" : `grade ${student.gradeLevel}`}. ` +
+        "Ask the administrator to add one under Fee structures, or use a custom amount.",
+      );
+    }
+    if (input.period === "YEARLY" && monthly.length === 0 && annual.length === 0) {
+      throw ApiError.badRequest(
+        `No monthly or annual fee presets are defined for grade ${student.gradeLevel} — use a custom amount instead`,
+      );
+    }
+    if (input.period === "MONTHLY") {
+      for (const f of monthly) items.push({ description: `${f.name} — ${periodLabel}`, amount: f.amount * months, feeStructureId: f.id });
+    } else {
+      for (const f of monthly) items.push({ description: `${f.name} — 12 months`, amount: f.amount * 12, feeStructureId: f.id });
+      for (const f of annual) items.push({ description: f.name, amount: f.amount, feeStructureId: f.id });
+    }
+    discountPercent = input.period === "YEARLY" ? (settings?.yearlyDiscountPercent ?? 0) : 0;
   }
 
   const subtotal = items.reduce((s, i) => s + i.amount, 0);
-  const discountPercent = input.period === "YEARLY" ? (settings?.yearlyDiscountPercent ?? 0) : 0;
   const discount = Math.round((subtotal * discountPercent) / 100);
   const total = subtotal - discount;
 
-  const invoice = await prisma.$transaction(async (tx) => {
+  const { invoice, payment } = await prisma.$transaction(async (tx) => {
     const inv = await tx.invoice.create({
       data: {
         number: await nextInvoiceNumber(tx),
@@ -304,18 +371,20 @@ export async function collectPayment(input: CollectPaymentInput, recordedBy: str
       },
       include: { items: true },
     });
-    await tx.payment.create({
+    const pay = await tx.payment.create({
       data: {
         invoiceId: inv.id, amount: total, method: input.method, status: "SUCCEEDED",
-        provider: "MANUAL", providerRef: input.reference, paidAt: new Date(), recordedBy,
+        provider: "MANUAL", providerRef: input.reference, note: input.note || null,
+        paidAt: new Date(), recordedBy,
       },
     });
-    return inv;
+    return { invoice: inv, payment: pay };
   });
 
   return {
     invoice,
     receipt: {
+      paymentId: payment.id,
       number: invoice.number,
       student: `${student.firstName} ${student.lastName} (${student.admissionNo})`,
       period: input.period,
@@ -324,30 +393,143 @@ export async function collectPayment(input: CollectPaymentInput, recordedBy: str
       discount,
       total,
       method: input.method,
+      note: input.note ?? null,
     },
   };
 }
 
+// ========================= transactions & refunds =========================
+
+/** Paginated payment history (the "Transactions" screen). */
+export async function listPayments(q: PaginationQuery & { status?: string; method?: string }) {
+  const where: Prisma.PaymentWhereInput = {
+    ...(q.status ? { status: q.status } : {}),
+    ...(q.method ? { method: q.method } : {}),
+    ...(q.search
+      ? {
+          invoice: {
+            is: {
+              OR: [
+                { number: { contains: q.search } },
+                { student: { is: { OR: [{ firstName: { contains: q.search } }, { lastName: { contains: q.search } }, { admissionNo: { contains: q.search } }] } } },
+              ],
+            },
+          },
+        }
+      : {}),
+  };
+  const [items, total] = await Promise.all([
+    prisma.payment.findMany({
+      where,
+      ...toSkipTake(q),
+      orderBy: { createdAt: "desc" },
+      include: {
+        invoice: {
+          select: {
+            id: true, number: true, currency: true,
+            student: { select: { id: true, firstName: true, lastName: true, admissionNo: true, gradeLevel: true } },
+          },
+        },
+      },
+    }),
+    prisma.payment.count({ where }),
+  ]);
+  return paginate(items, total, q);
+}
+
+/** Full detail of a single transaction — drives the receipt printout. */
+export async function getPayment(id: string) {
+  const payment = await prisma.payment.findUnique({
+    where: { id },
+    include: {
+      invoice: {
+        include: {
+          student: { select: { id: true, firstName: true, lastName: true, admissionNo: true, gradeLevel: true } },
+          items: true,
+        },
+      },
+    },
+  });
+  if (!payment) throw ApiError.notFound("Payment");
+
+  // Resolve the acting users' names for the receipt / audit display.
+  const userIds = [payment.recordedBy, payment.refundedBy].filter((v): v is string => !!v);
+  const users = userIds.length
+    ? await prisma.user.findMany({ where: { id: { in: userIds } }, select: { id: true, firstName: true, lastName: true } })
+    : [];
+  const nameOf = (uid: string | null) => {
+    const u = users.find((x) => x.id === uid);
+    return u ? `${u.firstName} ${u.lastName}` : null;
+  };
+  const settings = await prisma.schoolSettings.findUnique({ where: { id: "school" } });
+
+  return {
+    ...payment,
+    recordedByName: nameOf(payment.recordedBy),
+    refundedByName: nameOf(payment.refundedBy),
+    school: settings
+      ? { name: settings.schoolName, address: settings.address, phone: settings.phone, email: settings.email, motto: settings.motto }
+      : null,
+  };
+}
+
+/**
+ * SUPER_ADMIN-only: reverse a succeeded payment. The row is kept and marked
+ * REFUNDED (with who/when/why) so the money trail stays auditable; the
+ * invoice balance reopens automatically.
+ */
+export async function refundPayment(id: string, reason: string, refundedBy: string) {
+  const payment = await prisma.payment.findUnique({ where: { id } });
+  if (!payment) throw ApiError.notFound("Payment");
+  if (payment.status !== "SUCCEEDED") {
+    throw ApiError.badRequest(`Only succeeded payments can be refunded (this one is ${payment.status})`);
+  }
+  const updated = await prisma.payment.update({
+    where: { id },
+    data: { status: "REFUNDED", refundedAt: new Date(), refundedBy, refundReason: reason },
+  });
+  await refreshInvoiceStatus(payment.invoiceId);
+  return updated;
+}
+
 // ============================== reporting ==============================
 
-/** Collections vs outstanding for the accountant dashboard. */
+/**
+ * Collections vs outstanding for the accountant dashboard.
+ *
+ * Pure SQL aggregation — the previous version materialised every invoice
+ * with its items and payments in JS, which fell over once the school had
+ * tens of thousands of invoices.
+ */
 export async function financeOverview() {
-  const [invoices, payments] = await Promise.all([
-    prisma.invoice.findMany({ where: { status: { notIn: ["VOID", "DRAFT"] } }, include: { items: true, payments: true } }),
-    prisma.payment.findMany({ where: { status: "SUCCEEDED" }, orderBy: { paidAt: "desc" }, take: 15, include: { invoice: { include: { student: { select: { firstName: true, lastName: true } } } } } }),
+  const billable: Prisma.InvoiceWhereInput = { status: { notIn: ["VOID", "DRAFT"] } };
+  const [invoicedAgg, collectedAgg, overdueCount, recentPayments] = await Promise.all([
+    prisma.invoiceItem.aggregate({ _sum: { amount: true }, where: { invoice: billable } }),
+    prisma.payment.aggregate({ _sum: { amount: true }, where: { status: "SUCCEEDED", invoice: billable } }),
+    // Overdue = stored OVERDUE plus unpaid invoices whose due date has
+    // passed but whose status hasn't been refreshed by a payment yet.
+    prisma.invoice.count({
+      where: {
+        OR: [
+          { status: "OVERDUE" },
+          { status: { in: ["ISSUED", "PARTIALLY_PAID"] }, dueDate: { lt: new Date() } },
+        ],
+      },
+    }),
+    prisma.payment.findMany({
+      where: { status: "SUCCEEDED" },
+      orderBy: { paidAt: "desc" },
+      take: 15,
+      include: { invoice: { include: { student: { select: { firstName: true, lastName: true } } } } },
+    }),
   ]);
-  const totals = invoices.reduce(
-    (acc, inv) => {
-      acc.invoiced += invoiceTotal(inv);
-      acc.collected += invoicePaid(inv);
-      return acc;
-    },
-    { invoiced: 0, collected: 0 },
-  );
+  const invoiced = invoicedAgg._sum.amount ?? 0;
+  const collected = collectedAgg._sum.amount ?? 0;
   return {
-    ...totals,
-    outstanding: totals.invoiced - totals.collected,
-    overdueCount: invoices.filter((i) => i.status === "OVERDUE").length,
-    recentPayments: payments,
+    invoiced,
+    collected,
+    outstanding: invoiced - collected,
+    overdueCount,
+    recentPayments,
   };
 }

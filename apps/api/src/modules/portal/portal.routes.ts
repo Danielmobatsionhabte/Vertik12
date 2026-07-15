@@ -6,6 +6,7 @@ import { asyncHandler } from "../../middleware/error-handler";
 import { ok } from "../../lib/pagination";
 import * as portal from "./portal.service";
 import * as assignments from "../assignments/assignments.service";
+import { sendAttachment } from "../assignments/assignments.routes";
 
 /** Parent portal — guardian accounts only; scoped to their own children. */
 export const portalRouter = Router();
@@ -31,4 +32,9 @@ portalRouter.get("/children/:studentId/assignments", asyncHandler(async (req, re
 
 portalRouter.post("/assignments/submit", validateBody(submitAssignmentSchema), asyncHandler(async (req, res) => {
   res.status(201).json(ok(await assignments.submitForChild(req.body, req.user!.sub), "Assignment submitted"));
+}));
+
+// The teacher's attached brief (PDF/JPG/DOC), ownership-checked.
+portalRouter.get("/assignments/:id/attachment", asyncHandler(async (req, res) => {
+  sendAttachment(res, await assignments.assignmentAttachmentForParent(req.user!.sub, req.params.id));
 }));

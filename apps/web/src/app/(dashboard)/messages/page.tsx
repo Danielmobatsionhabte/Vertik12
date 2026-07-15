@@ -1,9 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
+import type { Paginated } from "@vertik12/shared";
 import { get, post, ApiClientError } from "@/lib/api";
 import { humanize } from "@/lib/format";
 import { Badge, Button, Card, ErrorNote, Field, Input, Modal, PageHeader, Select, Spinner, cx } from "@/components/ui";
+import { Pager } from "@/components/data-table";
 
 /**
  * Internal messaging for every portal — email-like inbox/sent/compose.
@@ -25,20 +27,22 @@ type Box = "inbox" | "sent";
 
 export default function MessagesPage() {
   const [box, setBox] = useState<Box>("inbox");
-  const [inbox, setInbox] = useState<{ items: MessageRow[]; unread: number } | null>(null);
-  const [sent, setSent] = useState<MessageRow[] | null>(null);
+  const [inbox, setInbox] = useState<(Paginated<MessageRow> & { unread: number }) | null>(null);
+  const [sent, setSent] = useState<Paginated<MessageRow> | null>(null);
+  const [inboxPage, setInboxPage] = useState(1);
+  const [sentPage, setSentPage] = useState(1);
   const [open, setOpen] = useState<MessageRow | null>(null);
   const [showCompose, setShowCompose] = useState(false);
   const [replyTo, setReplyTo] = useState<MessageRow | null>(null);
 
   const load = useCallback(async () => {
     const [i, s] = await Promise.all([
-      get<{ items: MessageRow[]; unread: number }>("/messages/inbox"),
-      get<MessageRow[]>("/messages/sent"),
+      get<Paginated<MessageRow> & { unread: number }>(`/messages/inbox?page=${inboxPage}&pageSize=15`),
+      get<Paginated<MessageRow>>(`/messages/sent?page=${sentPage}&pageSize=15`),
     ]);
     setInbox(i);
     setSent(s);
-  }, []);
+  }, [inboxPage, sentPage]);
 
   useEffect(() => {
     void load();
@@ -52,7 +56,8 @@ export default function MessagesPage() {
     }
   }
 
-  const rows = box === "inbox" ? inbox?.items : sent;
+  const rows = box === "inbox" ? inbox?.items : sent?.items;
+  const pager = box === "inbox" ? inbox : sent;
 
   return (
     <div className="max-w-4xl">
@@ -108,6 +113,13 @@ export default function MessagesPage() {
               );
             })}
           </ul>
+        )}
+        {pager && (
+          <Pager
+            page={pager.page}
+            totalPages={pager.totalPages}
+            onPage={box === "inbox" ? setInboxPage : setSentPage}
+          />
         )}
       </Card>
 

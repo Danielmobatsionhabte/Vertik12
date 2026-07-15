@@ -1,11 +1,28 @@
-import type { CreateAssignmentInput, SubmitAssignmentInput } from "@vertik12/shared";
+import type { AttachmentInput, CreateAssignmentInput, PaginationQuery, SubmitAssignmentInput, UpdateAssignmentInput } from "@vertik12/shared";
 import { prisma } from "../../lib/prisma";
 import { ApiError } from "../../lib/errors";
+import { paginate, toSkipTake } from "../../lib/pagination";
 import { documentStore } from "../../lib/document-store";
 
 const SUBMISSIONS = "assignment-submissions"; // document-store collection
+const ATTACHMENTS = "assignment-attachments"; // uploaded files (base64 bodies)
 
 type Actor = { userId: string; role: string };
+
+/** Store an uploaded file; SQL keeps only the returned reference. */
+const storeAttachment = (file: AttachmentInput) =>
+  documentStore.put(ATTACHMENTS, { name: file.name, type: file.type, data: file.dataBase64 });
+
+/** Fetch a stored file back as a decoded buffer + metadata for download. */
+async function loadAttachment(ref: string) {
+  const doc = await documentStore.get(ATTACHMENTS, ref);
+  if (!doc) throw ApiError.notFound("Attachment");
+  return {
+    name: (doc.name as string) ?? "attachment",
+    type: (doc.type as string) ?? "application/octet-stream",
+    buffer: Buffer.from((doc.data as string) ?? "", "base64"),
+  };
+}
 
 /** Teachers may only touch assignments on their own class × subject. */
 async function assertOwnClassSubject(actor: Actor, classSubjectId: string) {
@@ -22,29 +39,104 @@ async function assertOwnClassSubject(actor: Actor, classSubjectId: string) {
 
 // ============================ teacher side ============================
 
-export async function listMine(actor: Actor) {
-  const where =
-    actor.role === "TEACHER"
+export async function listMine(actor: Actor, q: PaginationQuery) {
+  const where = {
+    ...(actor.role === "TEACHER"
       ? { classSubject: { teacher: { is: { userId: actor.userId } } } }
-      : {};
-  return prisma.assignment.findMany({
-    where,
-    orderBy: { dueDate: "desc" },
-    include: {
-      classSubject: {
-        include: {
-          subject: { select: { name: true, code: true } },
-          classRoom: { select: { id: true, name: true, _count: { select: { enrollments: true } } } },
+      : {}),
+    ...(q.search ? { title: { contains: q.search } } : {}),
+  };
+  const [items, total] = await Promise.all([
+    prisma.assignment.findMany({
+      where,
+      orderBy: { dueDate: "desc" },
+      ...toSkipTake(q),
+      include: {
+        classSubject: {
+          include: {
+            subject: { select: { name: true, code: true } },
+            classRoom: { select: { id: true, name: true, _count: { select: { enrollments: true } } } },
+          },
         },
+        _count: { select: { submissions: true } },
       },
-      _count: { select: { submissions: true } },
-    },
-  });
+    }),
+    prisma.assignment.count({ where }),
+  ]);
+  return paginate(items, total, q);
 }
 
 export async function createAssignment(input: CreateAssignmentInput, actor: Actor) {
   await assertOwnClassSubject(actor, input.classSubjectId);
-  return prisma.assignment.create({ data: { ...input, createdById: actor.userId } });
+  const { attachment, ...data } = input;
+  const attachmentRef = attachment ? await storeAttachment(attachment) : null;
+  return prisma.assignment.create({
+    data: {
+      ...data,
+      createdById: actor.userId,
+      attachmentRef,
+      attachmentName: attachment?.name ?? null,
+      attachmentType: attachment?.type ?? null,
+    },
+  });
+}
+
+/** Teacher/Admin loads one assignment (ownership-checked for teachers). */
+async function assertOwnAssignment(assignmentId: string, actor: Actor) {
+  const assignment = await prisma.assignment.findUnique({
+    where: { id: assignmentId },
+    include: { classSubject: { include: { teacher: { select: { userId: true } } } } },
+  });
+  if (!assignment) throw ApiError.notFound("Assignment");
+  if (actor.role === "TEACHER" && assignment.classSubject.teacher?.userId !== actor.userId) {
+    throw ApiError.forbidden("This assignment belongs to another teacher");
+  }
+  return assignment;
+}
+
+/** Teacher modifies an assignment they sent (title, instructions, due date, file). */
+export async function updateAssignment(assignmentId: string, input: UpdateAssignmentInput, actor: Actor) {
+  await assertOwnAssignment(assignmentId, actor);
+  const { attachment, removeAttachment, ...data } = input;
+  const attachmentRef = attachment ? await storeAttachment(attachment) : undefined;
+  return prisma.assignment.update({
+    where: { id: assignmentId },
+    data: {
+      ...data,
+      ...(attachment
+        ? { attachmentRef, attachmentName: attachment.name, attachmentType: attachment.type }
+        : removeAttachment
+          ? { attachmentRef: null, attachmentName: null, attachmentType: null }
+          : {}),
+    },
+  });
+}
+
+/** Teacher removes an assignment (submissions go with it, by design). */
+export async function deleteAssignment(assignmentId: string, actor: Actor) {
+  await assertOwnAssignment(assignmentId, actor);
+  return prisma.assignment.delete({ where: { id: assignmentId } });
+}
+
+/** Download the teacher's attached brief (teacher/admin side). */
+export async function assignmentAttachment(assignmentId: string, actor: Actor) {
+  const assignment = await assertOwnAssignment(assignmentId, actor);
+  if (!assignment.attachmentRef) throw ApiError.notFound("Attachment");
+  return loadAttachment(assignment.attachmentRef);
+}
+
+/** Download a submission's uploaded document (owning teacher / admin). */
+export async function submissionAttachment(submissionId: string, actor: Actor) {
+  const submission = await prisma.assignmentSubmission.findUnique({
+    where: { id: submissionId },
+    include: { assignment: { include: { classSubject: { include: { teacher: { select: { userId: true } } } } } } },
+  });
+  if (!submission) throw ApiError.notFound("Submission");
+  if (actor.role === "TEACHER" && submission.assignment.classSubject.teacher?.userId !== actor.userId) {
+    throw ApiError.forbidden("This submission belongs to another teacher's assignment");
+  }
+  if (!submission.attachmentRef) throw ApiError.notFound("Attachment");
+  return loadAttachment(submission.attachmentRef);
 }
 
 /** Submissions for one assignment, with bodies pulled from the document store. */
@@ -111,7 +203,10 @@ export async function assignmentsForChild(parentUserId: string, studentId: strin
           teacher: { include: { user: { select: { firstName: true, lastName: true } } } },
         },
       },
-      submissions: { where: { studentId }, select: { id: true, submittedAt: true, feedback: true, grade: true, linkUrl: true } },
+      submissions: {
+        where: { studentId },
+        select: { id: true, submittedAt: true, feedback: true, grade: true, linkUrl: true, attachmentName: true },
+      },
     },
   });
   return assignments.map((a) => ({
@@ -123,9 +218,29 @@ export async function assignmentsForChild(parentUserId: string, studentId: strin
     teacher: a.classSubject.teacher
       ? `${a.classSubject.teacher.user.firstName} ${a.classSubject.teacher.user.lastName}`
       : null,
+    attachmentName: a.attachmentName,
     mySubmission: a.submissions[0] ?? null,
     overdue: !a.submissions[0] && a.dueDate < new Date(),
   }));
+}
+
+/** Parent downloads the teacher's attached brief for their child's homework. */
+export async function assignmentAttachmentForParent(parentUserId: string, assignmentId: string) {
+  const assignment = await prisma.assignment.findUnique({
+    where: { id: assignmentId },
+    include: { classSubject: { select: { classRoomId: true } } },
+  });
+  if (!assignment) throw ApiError.notFound("Assignment");
+  // Ownership: one of the parent's children must be enrolled in that class.
+  const child = await prisma.enrollment.findFirst({
+    where: {
+      classRoomId: assignment.classSubject.classRoomId,
+      student: { guardians: { some: { guardian: { is: { userId: parentUserId } } } } },
+    },
+  });
+  if (!child) throw ApiError.forbidden("You do not have access to this assignment");
+  if (!assignment.attachmentRef) throw ApiError.notFound("Attachment");
+  return loadAttachment(assignment.attachmentRef);
 }
 
 /** Parent submits on their child's behalf; the body goes to the document store. */
@@ -155,6 +270,12 @@ export async function submitForChild(input: SubmitAssignmentInput, parentUserId:
     submittedBy: parentUserId,
     submittedAt: new Date().toISOString(),
   });
+  const attachmentRef = input.attachment ? await storeAttachment(input.attachment) : null;
+  const attachmentFields = {
+    attachmentRef,
+    attachmentName: input.attachment?.name ?? null,
+    attachmentType: input.attachment?.type ?? null,
+  };
 
   return prisma.assignmentSubmission.upsert({
     where: { assignmentId_studentId: { assignmentId: input.assignmentId, studentId: input.studentId } },
@@ -164,7 +285,8 @@ export async function submitForChild(input: SubmitAssignmentInput, parentUserId:
       submittedById: parentUserId,
       contentRef,
       linkUrl: input.linkUrl || null,
+      ...attachmentFields,
     },
-    update: { contentRef, linkUrl: input.linkUrl || null, submittedAt: new Date() },
+    update: { contentRef, linkUrl: input.linkUrl || null, submittedAt: new Date(), ...attachmentFields },
   });
 }

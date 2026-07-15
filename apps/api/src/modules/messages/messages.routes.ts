@@ -1,11 +1,12 @@
 import { Router } from "express";
-import { composeMessageSchema, STAFF_ROLES } from "@vertik12/shared";
+import { composeMessageSchema, paginationSchema, STAFF_ROLES } from "@vertik12/shared";
 import { prisma } from "../../lib/prisma";
 import { ApiError } from "../../lib/errors";
 import { authenticate } from "../../middleware/auth";
-import { validateBody } from "../../middleware/validate";
+import { validateBody, validateQuery, parsedQuery } from "../../middleware/validate";
 import { asyncHandler } from "../../middleware/error-handler";
-import { ok } from "../../lib/pagination";
+import { ok, paginate, toSkipTake } from "../../lib/pagination";
+import type { PaginationQuery } from "@vertik12/shared";
 
 /**
  * Internal email-like messaging for every portal:
@@ -35,17 +36,20 @@ messagesRouter.get("/recipients", asyncHandler(async (req, res) => {
   res.json(ok(users));
 }));
 
-messagesRouter.get("/inbox", asyncHandler(async (req, res) => {
-  const [items, unread] = await Promise.all([
+messagesRouter.get("/inbox", validateQuery(paginationSchema), asyncHandler(async (req, res) => {
+  const q = parsedQuery<PaginationQuery>(req);
+  const where = { recipientId: req.user!.sub };
+  const [items, total, unread] = await Promise.all([
     prisma.message.findMany({
-      where: { recipientId: req.user!.sub },
+      where,
       orderBy: { createdAt: "desc" },
-      take: 100,
+      ...toSkipTake(q),
       include: { sender: senderSelect },
     }),
-    prisma.message.count({ where: { recipientId: req.user!.sub, readAt: null } }),
+    prisma.message.count({ where }),
+    prisma.message.count({ where: { ...where, readAt: null } }),
   ]);
-  res.json(ok({ items, unread }));
+  res.json(ok({ ...paginate(items, total, q), unread }));
 }));
 
 // Lightweight unread counter for the sidebar badge (polled by every portal).
@@ -54,14 +58,19 @@ messagesRouter.get("/unread-count", asyncHandler(async (req, res) => {
   res.json(ok({ unread }));
 }));
 
-messagesRouter.get("/sent", asyncHandler(async (req, res) => {
-  const items = await prisma.message.findMany({
-    where: { senderId: req.user!.sub },
-    orderBy: { createdAt: "desc" },
-    take: 100,
-    include: { recipient: senderSelect },
-  });
-  res.json(ok(items));
+messagesRouter.get("/sent", validateQuery(paginationSchema), asyncHandler(async (req, res) => {
+  const q = parsedQuery<PaginationQuery>(req);
+  const where = { senderId: req.user!.sub };
+  const [items, total] = await Promise.all([
+    prisma.message.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      ...toSkipTake(q),
+      include: { recipient: senderSelect },
+    }),
+    prisma.message.count({ where }),
+  ]);
+  res.json(ok(paginate(items, total, q)));
 }));
 
 // Reading a message marks it read (only the recipient can open it).

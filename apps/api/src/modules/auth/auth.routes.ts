@@ -4,6 +4,7 @@ import { z } from "zod";
 import { authenticate } from "../../middleware/auth";
 import { validateBody } from "../../middleware/validate";
 import { asyncHandler } from "../../middleware/error-handler";
+import { loginRateLimit } from "../../middleware/rate-limit";
 import { ok } from "../../lib/pagination";
 import * as auth from "./auth.service";
 
@@ -11,6 +12,7 @@ export const authRouter = Router();
 
 authRouter.post(
   "/login",
+  loginRateLimit,
   validateBody(loginSchema),
   asyncHandler(async (req, res) => {
     res.json(ok(await auth.login(req.body)));

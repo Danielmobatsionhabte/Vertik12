@@ -30,9 +30,15 @@ export function createApp() {
 
   // The Stripe webhook route needs the raw body for signature verification,
   // so JSON parsing must skip it (the route applies express.raw itself).
+  // Assignment routes accept base64 document uploads (≤5 MB before
+  // encoding), so they get a larger body cap than the 1 MB default.
+  const uploadJson = express.json({ limit: "8mb" });
+  const standardJson = express.json({ limit: "1mb" });
+  const UPLOAD_PATHS = ["/api/v1/assignments", "/api/v1/portal/assignments"];
   app.use((req, res, next) => {
     if (req.originalUrl === "/api/v1/finance/payments/webhook") return next();
-    express.json({ limit: "1mb" })(req, res, next);
+    const parser = UPLOAD_PATHS.some((p) => req.originalUrl.startsWith(p)) ? uploadJson : standardJson;
+    parser(req, res, next);
   });
 
   app.get("/health", (_req, res) =>

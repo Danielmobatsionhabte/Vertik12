@@ -56,10 +56,10 @@ export default function LoginPage() {
           )}
           <form onSubmit={onSubmit} className="space-y-4">
             <Field label="Email address">
-              <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" required />
+              <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" required maxLength={254} />
             </Field>
             <Field label="Password" hint="Demo password: Vertik12!demo">
-              <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required />
+              <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required minLength={8} maxLength={128} />
             </Field>
             <ErrorNote message={error} />
             <Button type="submit" loading={loading} className="w-full">

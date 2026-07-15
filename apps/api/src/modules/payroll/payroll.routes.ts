@@ -1,8 +1,10 @@
 import { Router } from "express";
-import { createPayrollRunSchema, payslipBonusSchema, upsertSalaryStructureSchema } from "@vertik12/shared";
+import { createPayrollRunSchema, emailPayslipSchema, payslipBonusSchema, upsertSalaryStructureSchema } from "@vertik12/shared";
 import { authenticate, requireRoles } from "../../middleware/auth";
 import { validateBody } from "../../middleware/validate";
 import { asyncHandler } from "../../middleware/error-handler";
+import { ApiError } from "../../lib/errors";
+import { sendMail } from "../../lib/mailer";
 import { ok } from "../../lib/pagination";
 import * as payroll from "./payroll.service";
 
@@ -63,4 +65,26 @@ payrollRouter.patch("/payslips/:id/bonus", requireRoles("ADMIN"), validateBody(p
 payrollRouter.get("/staff/:staffId/payslips", requireRoles("ADMIN", "ACCOUNTANT", "TEACHER"),
   asyncHandler(async (req, res) => {
     res.json(ok(await payroll.staffPayslips(req.params.staffId)));
+  }));
+
+// Full paystub (drives the printable view).
+payrollRouter.get("/payslips/:id", requireRoles("ADMIN", "ACCOUNTANT"),
+  asyncHandler(async (req, res) => {
+    res.json(ok(await payroll.getPayslip(req.params.id)));
+  }));
+
+// Email the paystub to the employee (or an explicit address).
+payrollRouter.post("/payslips/:id/email", requireRoles("ADMIN"), validateBody(emailPayslipSchema),
+  asyncHandler(async (req, res) => {
+    const payslip = await payroll.getPayslip(req.params.id);
+    const to = req.body.email ?? payslip.staff.user.email;
+    if (!to) throw ApiError.badRequest("This employee has no email address on file — provide one");
+    const period = new Date(payslip.run.year, payslip.run.month - 1, 1)
+      .toLocaleDateString("en-US", { month: "long", year: "numeric" });
+    const result = await sendMail({
+      to,
+      subject: `Your paystub — ${period}`,
+      html: payroll.payslipEmailHtml(payslip),
+    });
+    res.json(ok(result, result.message));
   }));

@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { get, post, patch, ApiClientError } from "@/lib/api";
+import Link from "next/link";
+import { get, post, patch, getSession, ApiClientError } from "@/lib/api";
 import { formatMoney, monthLabel } from "@/lib/format";
 import { Badge, Button, Card, ErrorNote, Modal, PageHeader, Spinner } from "@/components/ui";
 import { DataTable } from "@/components/data-table";
@@ -38,7 +39,11 @@ export default function PayrollPage() {
   const [detail, setDetail] = useState<RunDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [emailingId, setEmailingId] = useState<string | null>(null);
+  const role = getSession()?.user.role;
+  const isAdmin = role === "ADMIN" || role === "SUPER_ADMIN";
 
   const load = useCallback(() => get<RunRow[]>("/payroll/runs").then(setRuns), []);
   useEffect(() => {
@@ -105,14 +110,33 @@ export default function PayrollPage() {
     }
   }
 
+  /** Email one paystub straight to the employee's account address. */
+  async function emailPayslip(payslipId: string, name: string) {
+    setEmailingId(payslipId);
+    setNotice(null);
+    try {
+      const result = await post<{ message: string }>(`/payroll/payslips/${payslipId}/email`, {});
+      setNotice(`${name}: ${result.message}`);
+    } catch (err) {
+      setNotice(err instanceof ApiClientError ? err.message : "Failed to send the email");
+    } finally {
+      setEmailingId(null);
+    }
+  }
+
   return (
     <div>
       <PageHeader
         title="Payroll"
         subtitle="Monthly runs snapshot each employee's salary structure into payslips: Draft → Approved → Paid"
-        actions={<Button onClick={createRun} loading={busy}>+ Run payroll for this month</Button>}
+        actions={isAdmin ? <Button onClick={createRun} loading={busy}>+ Run payroll for this month</Button> : undefined}
       />
       <ErrorNote message={error} />
+      {notice && (
+        <div className="mt-2 rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800">
+          {notice} <button className="ml-2 underline" onClick={() => setNotice(null)}>Dismiss</button>
+        </div>
+      )}
 
       <Card className="mt-4">
         <DataTable
@@ -144,8 +168,8 @@ export default function PayrollPage() {
               </div>
               <div className="flex items-center gap-2">
                 <Badge>{detail.status}</Badge>
-                {detail.status === "DRAFT" && <Button loading={busy} onClick={() => transition(detail, "approve")}>Approve run</Button>}
-                {detail.status === "APPROVED" && <Button loading={busy} onClick={() => transition(detail, "pay")}>Mark disbursed</Button>}
+                {isAdmin && detail.status === "DRAFT" && <Button loading={busy} onClick={() => transition(detail, "approve")}>Approve run</Button>}
+                {isAdmin && detail.status === "APPROVED" && <Button loading={busy} onClick={() => transition(detail, "pay")}>Mark disbursed</Button>}
               </div>
             </div>
 
@@ -160,6 +184,7 @@ export default function PayrollPage() {
                     <th className="px-4 py-2 text-right font-medium">Deductions</th>
                     <th className="px-4 py-2 text-right font-medium">Net pay</th>
                     <th className="px-4 py-2 font-medium">Status</th>
+                    <th className="px-4 py-2 font-medium">Paystub</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -193,6 +218,27 @@ export default function PayrollPage() {
                       </td>
                       <td className="px-4 py-2 text-right font-semibold tabular-nums text-emerald-700">{formatMoney(p.net, p.currency)}</td>
                       <td className="px-4 py-2"><Badge>{p.status}</Badge></td>
+                      <td className="px-4 py-2">
+                        <span className="flex items-center gap-2 whitespace-nowrap">
+                          <Link
+                            href={`/payroll/payslip/${p.id}`}
+                            className="text-xs font-medium text-brand-600 hover:underline"
+                            title="Open the printable paystub"
+                          >
+                            🖨 Print
+                          </Link>
+                          {isAdmin && (
+                            <button
+                              className="text-xs font-medium text-slate-500 hover:underline disabled:opacity-50"
+                              disabled={emailingId === p.id}
+                              onClick={() => void emailPayslip(p.id, `${p.staff.user.firstName} ${p.staff.user.lastName}`)}
+                              title="Email the paystub to the employee"
+                            >
+                              ✉️ Email
+                            </button>
+                          )}
+                        </span>
+                      </td>
                     </tr>
                   ))}
                 </tbody>

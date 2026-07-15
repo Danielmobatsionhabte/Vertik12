@@ -48,5 +48,11 @@ export interface DashboardStats {
     overdueInvoices: number;
   };
   payroll: { lastRunLabel: string | null; lastRunNet: number };
+  /** Unique signed-in users per day — ADMIN/SUPER_ADMIN only (null for others). */
+  visitors: {
+    today: number;
+    last7Days: number;
+    trend: Array<{ date: string; count: number }>; // last 14 days, oldest first
+  } | null;
   recentAnnouncements: Array<{ id: string; title: string; audience: string; createdAt: string }>;
 }

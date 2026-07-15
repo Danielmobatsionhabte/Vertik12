@@ -42,6 +42,10 @@ class StripeProvider implements PaymentProvider {
   }
 
   async createCheckout(params: Parameters<PaymentProvider["createCheckout"]>[0]): Promise<CheckoutSession> {
+    // Stripe replaces {CHECKOUT_SESSION_ID} on redirect; the web app posts
+    // it back to /finance/payments/confirm so the payment is verified even
+    // without a webhook endpoint (essential for local/sandbox testing).
+    const glue = params.successUrl.includes("?") ? "&" : "?";
     const session = await this.stripe.checkout.sessions.create({
       mode: "payment",
       line_items: [
@@ -54,7 +58,7 @@ class StripeProvider implements PaymentProvider {
           quantity: 1,
         },
       ],
-      success_url: params.successUrl,
+      success_url: `${params.successUrl}${glue}session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: params.cancelUrl,
       metadata: params.metadata,
     });
@@ -64,6 +68,12 @@ class StripeProvider implements PaymentProvider {
       checkoutUrl: session.url ?? params.successUrl,
       autoConfirmed: false,
     };
+  }
+
+  /** Ask Stripe whether the hosted checkout was actually paid. */
+  async isSessionPaid(sessionId: string): Promise<boolean> {
+    const session = await this.stripe.checkout.sessions.retrieve(sessionId);
+    return session.payment_status === "paid";
   }
 
   /** Verify a webhook's signature and return the parsed event. */

@@ -2,8 +2,8 @@ import { Router, raw } from "express";
 import { z } from "zod";
 import {
   createFeeStructureSchema, createInvoiceSchema, bulkInvoiceSchema,
-  recordPaymentSchema, checkoutSchema, collectPaymentSchema,
-  paginationSchema, INVOICE_STATUSES,
+  recordPaymentSchema, checkoutSchema, collectPaymentSchema, refundPaymentSchema,
+  paginationSchema, INVOICE_STATUSES, PAYMENT_STATUSES, PAYMENT_METHODS,
 } from "@vertik12/shared";
 import { authenticate, requireRoles } from "../../middleware/auth";
 import { validateBody, validateQuery, parsedQuery } from "../../middleware/validate";
@@ -33,16 +33,23 @@ financeRouter.post(
 financeRouter.use(authenticate);
 
 // Fee structures --------------------------------------------------------
-// Registrar and Admin set up per-grade / per-year payment amounts
-// (monthly, termly, annual); the accountant can too.
+// The administration (ADMIN / SUPER_ADMIN) sets up per-grade / per-year
+// payment amounts (monthly, termly, annual); the registrar and accountant
+// read them to process collections at the preset amounts.
 financeRouter.get("/fee-structures", requireRoles("ADMIN", "REGISTRAR", "ACCOUNTANT"),
   asyncHandler(async (_req, res) => {
     res.json(ok(await finance.listFeeStructures()));
   }));
 
-financeRouter.post("/fee-structures", requireRoles("ADMIN", "REGISTRAR", "ACCOUNTANT"), validateBody(createFeeStructureSchema),
+financeRouter.post("/fee-structures", requireRoles("ADMIN"), validateBody(createFeeStructureSchema),
   asyncHandler(async (req, res) => {
     res.status(201).json(ok(await finance.createFeeStructure(req.body)));
+  }));
+
+// Retire a preset (kept on old invoices, no longer used for new ones).
+financeRouter.delete("/fee-structures/:id", requireRoles("ADMIN"),
+  asyncHandler(async (req, res) => {
+    res.json(ok(await finance.deactivateFeeStructure(req.params.id), "Fee structure removed"));
   }));
 
 // Invoices --------------------------------------------------------------
@@ -97,6 +104,42 @@ financeRouter.post("/payments/checkout", requireRoles("ADMIN", "ACCOUNTANT"), va
   asyncHandler(async (req, res) => {
     const { invoiceId, ...urls } = req.body;
     res.json(ok(await finance.createCheckout(invoiceId, urls)));
+  }));
+
+// Redirect-based checkout confirmation: any signed-in payer (parents come
+// back from Stripe to the portal; staff to the finance page) posts the
+// session id; the server verifies the payment WITH STRIPE before marking it
+// succeeded, so this endpoint can't be abused to forge payments.
+const confirmSessionSchema = z.object({ sessionId: z.string().min(1).max(255) });
+
+financeRouter.post("/payments/confirm",
+  requireRoles("ADMIN", "ACCOUNTANT", "REGISTRAR", "PARENT", "STUDENT"),
+  validateBody(confirmSessionSchema),
+  asyncHandler(async (req, res) => {
+    res.json(ok(await finance.confirmCheckoutSession(req.body.sessionId)));
+  }));
+
+// Transactions ----------------------------------------------------------
+const paymentListQuery = paginationSchema.extend({
+  status: z.enum(PAYMENT_STATUSES).optional(),
+  method: z.enum(PAYMENT_METHODS).optional(),
+});
+
+financeRouter.get("/payments", requireRoles("ADMIN", "ACCOUNTANT", "REGISTRAR"), validateQuery(paymentListQuery),
+  asyncHandler(async (req, res) => {
+    res.json(ok(await finance.listPayments(parsedQuery(req))));
+  }));
+
+financeRouter.get("/payments/:id", requireRoles("ADMIN", "ACCOUNTANT", "REGISTRAR"),
+  asyncHandler(async (req, res) => {
+    res.json(ok(await finance.getPayment(req.params.id)));
+  }));
+
+// Refunds are reserved for the SUPER_ADMIN (requireRoles() with no roles
+// admits only SUPER_ADMIN). The refund keeps the payment row for auditing.
+financeRouter.post("/payments/:id/refund", requireRoles(), validateBody(refundPaymentSchema),
+  asyncHandler(async (req, res) => {
+    res.json(ok(await finance.refundPayment(req.params.id, req.body.reason, req.user!.sub), "Payment refunded"));
   }));
 
 // Reporting -------------------------------------------------------------

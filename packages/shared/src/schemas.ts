@@ -14,57 +14,87 @@ import {
 // ---------- primitives ----------
 const isoDate = z.coerce.date();
 const money = z.number().int().nonnegative(); // integer minor units (cents)
-const id = z.string().min(1);
+const id = z.string().min(1).max(64).regex(/^[A-Za-z0-9_-]+$/, "Invalid id");
+
+/**
+ * Hardened free-text primitive: trimmed, length-capped, and control
+ * characters (null bytes, escape sequences) rejected. Combined with
+ * parameterized queries (Prisma) and React's output encoding this closes
+ * the practical SQL-injection / stored-XSS input vectors.
+ */
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/;
+export const safeText = (max: number, min = 1) =>
+  z.string().trim().min(min).max(max).refine((v) => !CONTROL_CHARS.test(v), {
+    message: "Contains invalid control characters",
+  });
+
+/** Email: normalized to lowercase, RFC length cap. */
+const email = z.string().trim().toLowerCase().email().max(254);
+
+/**
+ * Password policy for NEW passwords: length-bounded (a bcrypt DoS guard)
+ * and requires letters + digits so admin-issued accounts can't be reset to
+ * trivially guessable values.
+ */
+export const strongPassword = z
+  .string()
+  .min(8, "Password must be at least 8 characters")
+  .max(128, "Password is too long")
+  .regex(/[A-Za-z]/, "Password must contain a letter")
+  .regex(/[0-9]/, "Password must contain a number");
 
 // ---------- auth ----------
 export const loginSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(8, "Password must be at least 8 characters"),
+  email,
+  password: z.string().min(8, "Password must be at least 8 characters").max(128),
 });
 export type LoginInput = z.infer<typeof loginSchema>;
 
 export const changePasswordSchema = z.object({
-  currentPassword: z.string().min(8),
-  newPassword: z.string().min(8),
+  currentPassword: z.string().min(8).max(128),
+  newPassword: strongPassword,
 });
 
 export const createUserSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(8),
-  firstName: z.string().min(1),
-  lastName: z.string().min(1),
+  email,
+  password: strongPassword,
+  firstName: safeText(100),
+  lastName: safeText(100),
   role: z.enum(ROLES),
 });
 export type CreateUserInput = z.infer<typeof createUserSchema>;
 
 // ---------- students ----------
+const phone = z.string().trim().min(5).max(30).regex(/^[+()\-\s0-9]+$/, "Invalid phone number");
+
 export const guardianSchema = z.object({
-  firstName: z.string().min(1),
-  lastName: z.string().min(1),
-  relation: z.string().min(1), // e.g. "Mother", "Father", "Guardian"
-  email: z.string().email().optional().or(z.literal("")),
-  phone: z.string().min(5),
-  occupation: z.string().optional(),
+  firstName: safeText(100),
+  lastName: safeText(100),
+  relation: safeText(40), // e.g. "Mother", "Father", "Guardian"
+  email: email.optional().or(z.literal("")),
+  phone,
+  occupation: safeText(100, 0).optional(),
   isPrimary: z.boolean().default(false),
 });
 
 export const createStudentSchema = z.object({
-  firstName: z.string().min(1),
-  lastName: z.string().min(1),
+  firstName: safeText(100),
+  lastName: safeText(100),
   dateOfBirth: isoDate,
   gender: z.enum(GENDERS),
   gradeLevel: z.enum(GRADE_LEVELS),
-  email: z.string().email().optional().or(z.literal("")),
-  phone: z.string().optional(),
-  addressLine1: z.string().optional(),
-  city: z.string().optional(),
-  country: z.string().optional(),
-  nationality: z.string().optional(),
-  bloodGroup: z.string().optional(),
-  medicalNotes: z.string().optional(),
-  photoUrl: z.string().url().optional().or(z.literal("")),
+  email: email.optional().or(z.literal("")),
+  phone: phone.optional().or(z.literal("")),
+  addressLine1: safeText(200, 0).optional(),
+  city: safeText(100, 0).optional(),
+  country: safeText(100, 0).optional(),
+  nationality: safeText(100, 0).optional(),
+  bloodGroup: safeText(5, 0).optional(),
+  medicalNotes: safeText(2_000, 0).optional(),
+  photoUrl: z.string().url().max(500).optional().or(z.literal("")),
   classRoomId: id.optional(),
-  guardians: z.array(guardianSchema).default([]),
+  guardians: z.array(guardianSchema).max(6).default([]),
 });
 export type CreateStudentInput = z.infer<typeof createStudentSchema>;
 
@@ -75,17 +105,17 @@ export const updateStudentSchema = createStudentSchema
 
 // ---------- staff ----------
 export const createStaffSchema = z.object({
-  firstName: z.string().min(1),
-  lastName: z.string().min(1),
-  email: z.string().email(),
-  password: z.string().min(8).optional(), // omit to auto-generate
+  firstName: safeText(100),
+  lastName: safeText(100),
+  email,
+  password: strongPassword.optional(), // omit to auto-generate
   role: z.enum(["ADMIN", "REGISTRAR", "TEACHER", "ACCOUNTANT"]),
   staffType: z.enum(STAFF_TYPES),
-  designation: z.string().min(1), // e.g. "Mathematics Teacher"
-  department: z.string().optional(),
-  phone: z.string().optional(),
+  designation: safeText(100), // e.g. "Mathematics Teacher"
+  department: safeText(100, 0).optional(),
+  phone: phone.optional().or(z.literal("")),
   joinDate: isoDate,
-  qualifications: z.string().optional(),
+  qualifications: safeText(500, 0).optional(),
 });
 export type CreateStaffInput = z.infer<typeof createStaffSchema>;
 
@@ -190,25 +220,70 @@ export const reviewSubmissionSchema = z.object({
 });
 
 // ---------- assignments (teacher → students/parents) ----------
+
+/**
+ * Document attachments (teacher's assignment brief, parent's submission).
+ * Only PDF, JPEG, PNG and Word documents are accepted; the base64 body is
+ * capped at ~5 MB. The API decodes and stores it in the document store.
+ */
+export const ATTACHMENT_MIME_TYPES = [
+  "application/pdf",
+  "image/jpeg",
+  "image/png",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+] as const;
+export const ATTACHMENT_MAX_BYTES = 5 * 1024 * 1024;
+export const ATTACHMENT_ACCEPT = ".pdf,.jpg,.jpeg,.png,.doc,.docx";
+
+export const attachmentSchema = z.object({
+  name: safeText(200).refine((n) => !/[\\/]/.test(n), "Invalid file name"),
+  type: z.enum(ATTACHMENT_MIME_TYPES),
+  // base64 inflates ~4/3, so cap the encoded length accordingly.
+  dataBase64: z
+    .string()
+    .min(1)
+    .max(Math.ceil((ATTACHMENT_MAX_BYTES * 4) / 3) + 4, "File is too large (max 5 MB)")
+    .regex(/^[A-Za-z0-9+/=]+$/, "Invalid file data"),
+});
+export type AttachmentInput = z.infer<typeof attachmentSchema>;
+
 export const createAssignmentSchema = z.object({
   classSubjectId: id,
-  title: z.string().min(1).max(200),
-  instructions: z.string().min(1).max(10_000),
+  title: safeText(200),
+  instructions: safeText(10_000),
   dueDate: isoDate,
+  attachment: attachmentSchema.optional(),
 });
 export type CreateAssignmentInput = z.infer<typeof createAssignmentSchema>;
 
-export const submitAssignmentSchema = z.object({
-  assignmentId: id,
-  studentId: id,
-  content: z.string().min(1).max(50_000), // stored in the document store
-  linkUrl: z.string().url().optional().or(z.literal("")),
+/** Teachers may modify what they sent; `removeAttachment` clears the file. */
+export const updateAssignmentSchema = z.object({
+  title: safeText(200).optional(),
+  instructions: safeText(10_000).optional(),
+  dueDate: isoDate.optional(),
+  attachment: attachmentSchema.optional(),
+  removeAttachment: z.boolean().optional(),
 });
+export type UpdateAssignmentInput = z.infer<typeof updateAssignmentSchema>;
+
+export const submitAssignmentSchema = z
+  .object({
+    assignmentId: id,
+    studentId: id,
+    content: safeText(50_000, 0).default(""), // stored in the document store
+    linkUrl: z.string().url().max(500).optional().or(z.literal("")),
+    attachment: attachmentSchema.optional(),
+  })
+  .refine((v) => v.content.trim().length > 0 || v.attachment, {
+    message: "Write the work or attach a document",
+    path: ["content"],
+  });
 export type SubmitAssignmentInput = z.infer<typeof submitAssignmentSchema>;
 
 export const feedbackSchema = z.object({
-  feedback: z.string().min(1).max(2_000),
-  grade: z.string().max(10).optional(),
+  feedback: safeText(2_000),
+  grade: safeText(10, 0).optional(),
 });
 
 export const recordResultsSchema = z.object({
@@ -224,21 +299,22 @@ export type RecordResultsInput = z.infer<typeof recordResultsSchema>;
 
 // ---------- finance ----------
 export const createFeeStructureSchema = z.object({
-  name: z.string().min(1), // e.g. "Tuition — Grade 5"
+  name: safeText(150), // e.g. "Tuition — Grade 5"
   gradeLevel: z.enum(GRADE_LEVELS).optional(), // undefined = applies to all grades
-  amount: money,
+  amount: money.refine((v) => v > 0, "Amount must be positive"),
   frequency: z.enum(FEE_FREQUENCIES),
   academicYearId: id,
-  description: z.string().optional(),
+  description: safeText(500, 0).optional(),
 });
 
 export const createInvoiceSchema = z.object({
   studentId: id,
   dueDate: isoDate,
   items: z
-    .array(z.object({ description: z.string().min(1), amount: money, feeStructureId: id.optional() }))
-    .min(1),
-  notes: z.string().optional(),
+    .array(z.object({ description: safeText(200), amount: money, feeStructureId: id.optional() }))
+    .min(1)
+    .max(50),
+  notes: safeText(1_000, 0).optional(),
 });
 export type CreateInvoiceInput = z.infer<typeof createInvoiceSchema>;
 
@@ -253,10 +329,17 @@ export const recordPaymentSchema = z.object({
   invoiceId: id,
   amount: money.refine((v) => v > 0, "Amount must be positive"),
   method: z.enum(PAYMENT_METHODS),
-  reference: z.string().optional(), // receipt no / bank ref
+  reference: safeText(100, 0).optional(), // receipt no / bank ref
+  note: safeText(500, 0).optional(),
   paidAt: isoDate.optional(),
 });
 export type RecordPaymentInput = z.infer<typeof recordPaymentSchema>;
+
+/** SUPER_ADMIN-only: reverse a succeeded payment. */
+export const refundPaymentSchema = z.object({
+  reason: safeText(500),
+});
+export type RefundPaymentInput = z.infer<typeof refundPaymentSchema>;
 
 export const checkoutSchema = z.object({
   invoiceId: id,
@@ -275,7 +358,14 @@ export const collectPaymentSchema = z.object({
   /** MONTHLY only: pay several months ahead at once (no yearly discount). */
   months: z.coerce.number().int().min(1).max(12).default(1),
   method: z.enum(PAYMENT_METHODS),
-  reference: z.string().optional(),
+  reference: safeText(100, 0).optional(),
+  /**
+   * Override of the admin's per-grade preset: when provided, this exact
+   * amount (cents) is billed instead of the fee-structure computation.
+   */
+  customAmount: money.refine((v) => v > 0, "Amount must be positive").optional(),
+  /** Free-text note shown on the receipt / transaction detail. */
+  note: safeText(500, 0).optional(),
 });
 export type CollectPaymentInput = z.infer<typeof collectPaymentSchema>;
 
@@ -313,8 +403,8 @@ export type CreatePayrollRunInput = z.infer<typeof createPayrollRunSchema>;
 
 // ---------- announcements ----------
 export const createAnnouncementSchema = z.object({
-  title: z.string().min(1),
-  body: z.string().min(1),
+  title: safeText(200),
+  body: safeText(10_000),
   audience: z.enum(ANNOUNCEMENT_AUDIENCES),
   pinned: z.boolean().default(false),
 });
@@ -360,15 +450,22 @@ export type GradeBandsInput = z.infer<typeof gradeBandsSchema>;
 // ---------- messaging ----------
 export const composeMessageSchema = z.object({
   recipientId: id,
-  subject: z.string().min(1).max(200),
-  body: z.string().min(1).max(10_000),
+  subject: safeText(200),
+  body: safeText(10_000),
 });
 export type ComposeMessageInput = z.infer<typeof composeMessageSchema>;
+
+// ---------- payroll: paystub email ----------
+export const emailPayslipSchema = z.object({
+  /** Defaults to the staff member's account email when omitted. */
+  email: email.optional(),
+});
+export type EmailPayslipInput = z.infer<typeof emailPayslipSchema>;
 
 // ---------- list queries ----------
 export const paginationSchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(20),
-  search: z.string().optional(),
+  search: z.string().trim().max(200).optional(),
 });
 export type PaginationQuery = z.infer<typeof paginationSchema>;

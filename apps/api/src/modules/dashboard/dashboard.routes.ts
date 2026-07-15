@@ -1,5 +1,6 @@
 import { Router } from "express";
 import type { DashboardStats } from "@vertik12/shared";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "../../lib/prisma";
 import { authenticate, requireRoles } from "../../middleware/auth";
 import { asyncHandler } from "../../middleware/error-handler";
@@ -14,10 +15,16 @@ dashboardRouter.get("/stats", requireRoles("ADMIN", "REGISTRAR", "TEACHER", "ACC
     const today = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate()));
     const monthStart = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1));
 
+    // Unsettled invoices: their items minus their successful payments =
+    // the school's outstanding balance. Aggregated in SQL — loading every
+    // open invoice with relations does not scale past a few thousand rows.
+    const unsettled: Prisma.InvoiceWhereInput = { status: { in: ["ISSUED", "PARTIALLY_PAID", "OVERDUE"] } };
+
     const [
       studentTotal, byGrade, staffTotal, teachingTotal,
       todayTotal, todayPresent,
-      monthInvoices, monthPayments, allInvoices,
+      monthInvoices, monthPayments,
+      unsettledItems, unsettledPaid, overdueInvoices,
       lastRun, announcements,
     ] = await Promise.all([
       prisma.student.count({ where: { status: "ACTIVE" } }),
@@ -28,21 +35,50 @@ dashboardRouter.get("/stats", requireRoles("ADMIN", "REGISTRAR", "TEACHER", "ACC
       prisma.attendanceRecord.count({ where: { date: today, status: { in: ["PRESENT", "LATE"] } } }),
       prisma.invoiceItem.aggregate({ _sum: { amount: true }, where: { invoice: { issueDate: { gte: monthStart }, status: { notIn: ["VOID", "DRAFT"] } } } }),
       prisma.payment.aggregate({ _sum: { amount: true }, where: { status: "SUCCEEDED", paidAt: { gte: monthStart } } }),
-      prisma.invoice.findMany({ where: { status: { in: ["ISSUED", "PARTIALLY_PAID", "OVERDUE"] } }, include: { items: true, payments: { where: { status: "SUCCEEDED" } } } }),
+      prisma.invoiceItem.aggregate({ _sum: { amount: true }, where: { invoice: unsettled } }),
+      prisma.payment.aggregate({ _sum: { amount: true }, where: { status: "SUCCEEDED", invoice: unsettled } }),
+      prisma.invoice.count({
+        where: {
+          OR: [
+            { status: "OVERDUE" },
+            { status: { in: ["ISSUED", "PARTIALLY_PAID"] }, dueDate: { lt: today } },
+          ],
+        },
+      }),
       prisma.payrollRun.findFirst({ orderBy: [{ year: "desc" }, { month: "desc" }], include: { payslips: { select: { net: true } } } }),
       prisma.announcement.findMany({ orderBy: { createdAt: "desc" }, take: 5, select: { id: true, title: true, audience: true, createdAt: true } }),
     ]);
 
     // Grade levels sort naturally as K,1,2,...  — order them for the chart.
     const gradeOrder = ["K", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"];
-    const outstanding = allInvoices.reduce(
-      (s, inv) => s + inv.items.reduce((a, i) => a + i.amount, 0) - inv.payments.reduce((a, p) => a + p.amount, 0),
-      0,
-    );
+    const outstanding = (unsettledItems._sum.amount ?? 0) - (unsettledPaid._sum.amount ?? 0);
 
     // Teachers see no finance/payroll figures — those blocks are zeroed
     // here and hidden by the web dashboard.
     const financeVisible = req.user!.role !== "TEACHER";
+
+    // Visitor counters are for the administration only.
+    const isAdmin = req.user!.role === "ADMIN" || req.user!.role === "SUPER_ADMIN";
+    let visitors: DashboardStats["visitors"] = null;
+    if (isAdmin) {
+      const twoWeeksAgo = new Date(today);
+      twoWeeksAgo.setUTCDate(twoWeeksAgo.getUTCDate() - 13);
+      const weekAgo = new Date(today);
+      weekAgo.setUTCDate(weekAgo.getUTCDate() - 6);
+      const [visitsToday, visitors7, byDay] = await Promise.all([
+        prisma.dailyVisit.count({ where: { date: today } }),
+        prisma.dailyVisit.groupBy({ by: ["userId"], where: { date: { gte: weekAgo } } }),
+        prisma.dailyVisit.groupBy({ by: ["date"], where: { date: { gte: twoWeeksAgo } }, _count: true }),
+      ]);
+      const trend: Array<{ date: string; count: number }> = [];
+      for (let i = 0; i < 14; i++) {
+        const d = new Date(twoWeeksAgo);
+        d.setUTCDate(d.getUTCDate() + i);
+        const hit = byDay.find((b) => b.date.getTime() === d.getTime());
+        trend.push({ date: d.toISOString().slice(0, 10), count: hit?._count ?? 0 });
+      }
+      visitors = { today: visitsToday, last7Days: visitors7.length, trend };
+    }
 
     const stats: DashboardStats = {
       students: {
@@ -56,7 +92,7 @@ dashboardRouter.get("/stats", requireRoles("ADMIN", "REGISTRAR", "TEACHER", "ACC
             invoicedThisMonth: monthInvoices._sum.amount ?? 0,
             collectedThisMonth: monthPayments._sum.amount ?? 0,
             outstanding,
-            overdueInvoices: allInvoices.filter((i) => i.status === "OVERDUE").length,
+            overdueInvoices,
           }
         : { invoicedThisMonth: 0, collectedThisMonth: 0, outstanding: 0, overdueInvoices: 0 },
       payroll: financeVisible
@@ -65,6 +101,7 @@ dashboardRouter.get("/stats", requireRoles("ADMIN", "REGISTRAR", "TEACHER", "ACC
             lastRunNet: lastRun?.payslips.reduce((s, p) => s + p.net, 0) ?? 0,
           }
         : { lastRunLabel: null, lastRunNet: 0 },
+      visitors,
       recentAnnouncements: announcements.map((a) => ({ ...a, createdAt: a.createdAt.toISOString() })),
     };
     res.json(ok(stats));

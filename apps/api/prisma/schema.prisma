@@ -30,6 +30,9 @@ model User {
   /// True while the account still uses a temporary/admin-issued password;
   /// the web app forces a password change before anything else.
   mustChangePassword Boolean @default(false)
+  /// Last time this user opened the Announcements page — announcements
+  /// created after this moment count as "unread" for the sidebar badge.
+  announcementsSeenAt DateTime?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -227,6 +230,11 @@ model Assignment {
   dueDate        DateTime
   createdById    String // user id of the teacher
   createdAt      DateTime     @default(now())
+  /// Optional teacher attachment (PDF/JPG/DOC). The file body lives in the
+  /// document store; SQL keeps only the reference + display metadata.
+  attachmentRef  String?
+  attachmentName String?
+  attachmentType String? // mime type
 
   submissions AssignmentSubmission[]
 }
@@ -242,6 +250,10 @@ model AssignmentSubmission {
   /// production, in-process store in dev) — large content stays out of SQL.
   contentRef    String
   linkUrl       String?
+  /// Optional uploaded document (PDF/JPG/DOC) — body in the document store.
+  attachmentRef  String?
+  attachmentName String?
+  attachmentType String? // mime type
   submittedAt   DateTime   @default(now())
   feedback      String? // teacher's feedback after review
   grade         String?
@@ -306,6 +318,8 @@ model AttendanceRecord {
   @@unique([studentId, date, subjectId])
   @@index([classRoomId, date])
   @@index([studentId, date])
+  // Whole-school "attendance today" dashboard counters filter by date alone.
+  @@index([date])
 }
 
 // ============================== exams & grades ==============================
@@ -359,6 +373,8 @@ model ExamResult {
   remark    String?
 
   @@unique([examId, studentId, subjectId])
+  // Student profile / parent portal read results by student, not by exam.
+  @@index([studentId])
 }
 
 // ============================== finance ==============================
@@ -415,11 +431,19 @@ model Payment {
   status      String    @default("PENDING") // PENDING | SUCCEEDED | FAILED | REFUNDED
   provider    String    @default("MANUAL") // MANUAL | STRIPE | MOCK
   providerRef String? // Stripe session/intent id or manual receipt no
+  /// Free-text note the cashier attaches while collecting (shown on the receipt).
+  note        String?
   paidAt      DateTime?
   recordedBy  String? // user id
+  /// Refunds are SUPER_ADMIN-only; the original row is kept for the audit trail.
+  refundedAt   DateTime?
+  refundedBy   String? // user id of the super admin
+  refundReason String?
   createdAt   DateTime  @default(now())
 
   @@index([invoiceId])
+  // Checkout confirmations (webhook + redirect) look payments up by session id.
+  @@index([providerRef])
 }
 
 // ============================== payroll ==============================
@@ -493,6 +517,19 @@ model AuditLog {
 
   @@index([createdAt])
   @@index([userId])
+}
+
+/// One row per user per day with any authenticated activity — powers the
+/// admin dashboard's "visitors" counters. Written fire-and-forget by the
+/// auth middleware (throttled in-process, so ~one write per user per day).
+model DailyVisit {
+  id    String   @id @default(cuid())
+  userId String
+  role  String
+  date  DateTime // normalized to midnight UTC
+
+  @@unique([userId, date])
+  @@index([date])
 }
 
 /// Singleton (id = "school") — profile & policies editable by SUPER_ADMIN.

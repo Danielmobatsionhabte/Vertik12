@@ -48,6 +48,36 @@ export default function DashboardPage() {
         )}
       </div>
 
+      {/* visitors — administration only */}
+      {stats.visitors && (
+        <Card className="mt-6 p-6">
+          <div className="flex flex-wrap items-start justify-between gap-6">
+            <div>
+              <h2 className="text-sm font-semibold text-slate-700">Portal visitors</h2>
+              <p className="mt-2 text-3xl font-semibold tabular-nums text-slate-900">{stats.visitors.today}</p>
+              <p className="text-xs text-slate-400">unique users signed in today</p>
+              <p className="mt-2 text-sm text-slate-500">
+                <span className="font-medium text-slate-700">{stats.visitors.last7Days}</span> unique visitors in the last 7 days
+              </p>
+            </div>
+            <div className="flex items-end gap-1" aria-label="Daily visitors, last 14 days">
+              {(() => {
+                const max = Math.max(1, ...stats.visitors.trend.map((t) => t.count));
+                return stats.visitors.trend.map((t) => (
+                  <div key={t.date} className="flex flex-col items-center gap-1" title={`${t.date}: ${t.count} visitor(s)`}>
+                    <div
+                      className="w-4 rounded-t bg-brand-500/80"
+                      style={{ height: `${Math.max(3, (t.count / max) * 72)}px` }}
+                    />
+                    <span className="text-[9px] text-slate-400">{t.date.slice(8)}</span>
+                  </div>
+                ));
+              })()}
+            </div>
+          </div>
+        </Card>
+      )}
+
       <div className="mt-6 grid gap-6 lg:grid-cols-3">
         {/* enrolment by grade */}
         <Card className="p-6 lg:col-span-2">

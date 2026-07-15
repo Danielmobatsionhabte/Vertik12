@@ -2,10 +2,12 @@
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { useParams } from "next/navigation";
+import { ATTACHMENT_ACCEPT, type AttachmentInput } from "@vertik12/shared";
 import { get, post, ApiClientError } from "@/lib/api";
+import { fileToAttachment, downloadAttachment } from "@/lib/files";
 import { formatDate, formatMoney, fullName, gradeLabel, humanize } from "@/lib/format";
 import { Badge, Button, Card, ErrorNote, Field, Input, Modal, PageHeader, Spinner, StatCard } from "@/components/ui";
-import { DataTable } from "@/components/data-table";
+import { DataTable, Pager } from "@/components/data-table";
 
 interface PortalAssignment {
   id: string;
@@ -15,7 +17,8 @@ interface PortalAssignment {
   subject: string;
   teacher: string | null;
   overdue: boolean;
-  mySubmission: { id: string; submittedAt: string; feedback?: string | null; grade?: string | null } | null;
+  attachmentName?: string | null;
+  mySubmission: { id: string; submittedAt: string; feedback?: string | null; grade?: string | null; attachmentName?: string | null } | null;
 }
 
 interface ChildDetail {
@@ -49,6 +52,10 @@ export default function ChildPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [paying, setPaying] = useState<string | null>(null);
+  // Long lists paginate client-side so the page never grows unbounded.
+  const [invoicePage, setInvoicePage] = useState(1);
+  const [homeworkPage, setHomeworkPage] = useState(1);
+  const PER_PAGE = 8;
 
   const load = useCallback(
     () =>
@@ -62,11 +69,36 @@ export default function ChildPage() {
     void load();
   }, [load]);
 
+  // Coming back from Stripe Checkout: the success URL carries
+  // ?session_id=…; the API verifies the session with Stripe and marks the
+  // payment succeeded, then the page refreshes to show the settled invoice.
+  useEffect(() => {
+    const sessionId = new URLSearchParams(window.location.search).get("session_id");
+    if (!sessionId) return;
+    window.history.replaceState({}, "", window.location.pathname);
+    post<{ status: string; invoiceNumber: string }>("/finance/payments/confirm", { sessionId })
+      .then(async (r) => {
+        if (r.status === "SUCCEEDED") {
+          setNotice(`Payment for ${r.invoiceNumber} was received — thank you!`);
+          await load();
+        } else {
+          setNotice(`Payment for ${r.invoiceNumber} is still ${r.status.toLowerCase()} — refresh in a moment.`);
+        }
+      })
+      .catch((err) => setNotice(err instanceof ApiClientError ? err.message : "Could not verify the payment"));
+  }, [load]);
+
   async function payOnline(invoiceId: string, number: string) {
     setPaying(invoiceId);
     setNotice(null);
     try {
-      const session = await post<{ checkoutUrl: string; simulated: boolean }>("/portal/pay", { invoiceId });
+      // Send the family back to this exact page after paying (or cancelling).
+      const pageUrl = window.location.origin + window.location.pathname;
+      const session = await post<{ checkoutUrl: string; simulated: boolean }>("/portal/pay", {
+        invoiceId,
+        successUrl: pageUrl,
+        cancelUrl: pageUrl,
+      });
       if (session.simulated) {
         setNotice(`Payment for ${number} was approved (demo gateway).`);
         await load();
@@ -117,7 +149,7 @@ export default function ChildPage() {
         <Card>
           <h2 className="border-b border-slate-100 px-6 py-4 text-sm font-semibold text-slate-700">Fees & billing</h2>
           <DataTable
-            rows={invoices}
+            rows={invoices.slice((invoicePage - 1) * PER_PAGE, invoicePage * PER_PAGE)}
             keyFor={(i) => i.id}
             emptyTitle="No invoices"
             columns={[
@@ -140,6 +172,7 @@ export default function ChildPage() {
               },
             ]}
           />
+          <Pager page={invoicePage} totalPages={Math.ceil(invoices.length / PER_PAGE)} onPage={setInvoicePage} />
         </Card>
 
         <Card>
@@ -181,7 +214,7 @@ export default function ChildPage() {
             <p className="py-10 text-center text-sm text-slate-400">No assignments from the teachers yet.</p>
           ) : (
             <ul className="divide-y divide-slate-100">
-              {homework.map((a) => (
+              {homework.slice((homeworkPage - 1) * PER_PAGE, homeworkPage * PER_PAGE).map((a) => (
                 <li key={a.id} className="px-6 py-4">
                   <div className="flex items-start justify-between gap-3">
                     <div>
@@ -199,6 +232,17 @@ export default function ChildPage() {
                     )}
                   </div>
                   <p className="mt-1 line-clamp-2 whitespace-pre-wrap text-xs text-slate-500">{a.instructions}</p>
+                  {a.attachmentName && (
+                    <button
+                      className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-brand-600 hover:underline"
+                      onClick={() => downloadAttachment(`/portal/assignments/${a.id}/attachment`, a.attachmentName ?? undefined).catch((e) => setNotice(e.message))}
+                    >
+                      📎 {a.attachmentName} (from the teacher)
+                    </button>
+                  )}
+                  {a.mySubmission?.attachmentName && (
+                    <p className="mt-1 text-xs text-slate-400">Submitted document: {a.mySubmission.attachmentName}</p>
+                  )}
                   {a.mySubmission?.feedback && (
                     <p className="mt-2 rounded bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
                       Teacher's feedback: {a.mySubmission.feedback}
@@ -208,6 +252,9 @@ export default function ChildPage() {
                 </li>
               ))}
             </ul>
+          )}
+          {homework && (
+            <Pager page={homeworkPage} totalPages={Math.ceil(homework.length / PER_PAGE)} onPage={setHomeworkPage} />
           )}
         </Card>
 
@@ -268,11 +315,28 @@ function SubmitAssignmentModal({ assignment, studentId, onClose, onSubmitted }: 
 }) {
   const [content, setContent] = useState("");
   const [linkUrl, setLinkUrl] = useState("");
+  const [attachment, setAttachment] = useState<AttachmentInput | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
+  async function pickFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setError(null);
+    try {
+      setAttachment(await fileToAttachment(file));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not read the file");
+      e.target.value = "";
+    }
+  }
+
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
+    if (!content.trim() && !attachment) {
+      setError("Type the work or attach a document");
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
@@ -281,6 +345,7 @@ function SubmitAssignmentModal({ assignment, studentId, onClose, onSubmitted }: 
         studentId,
         content,
         linkUrl: linkUrl || undefined,
+        ...(attachment ? { attachment } : {}),
       });
       await onSubmitted();
     } catch (err) {
@@ -294,15 +359,25 @@ function SubmitAssignmentModal({ assignment, studentId, onClose, onSubmitted }: 
     <Modal open title={`Submit — ${assignment.title}`} onClose={onClose} wide>
       <form onSubmit={onSubmit} className="space-y-4">
         <p className="whitespace-pre-wrap rounded bg-slate-50 p-3 text-sm text-slate-600">{assignment.instructions}</p>
-        <Field label="Your child's work">
+        <Field label="Your child's work" hint="Optional if you attach a document below">
           <textarea
             className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
             rows={6}
             value={content}
             onChange={(e) => setContent(e.target.value)}
-            required
             placeholder="Type or paste the work here…"
           />
+        </Field>
+        <Field label="Upload a document (optional)" hint="PDF, JPG, PNG or Word — max 5 MB; the teacher sees it with the submission">
+          <div className="space-y-2">
+            <Input type="file" accept={ATTACHMENT_ACCEPT} onChange={(e) => void pickFile(e)} />
+            {attachment && (
+              <p className="flex items-center gap-2 text-xs text-slate-600">
+                📎 {attachment.name}
+                <button type="button" className="text-rose-600 underline" onClick={() => setAttachment(null)}>Remove</button>
+              </p>
+            )}
+          </div>
         </Field>
         <Field label="Link to a file (optional)" hint="e.g. a Google Drive or photo link">
           <Input type="url" value={linkUrl} onChange={(e) => setLinkUrl(e.target.value)} placeholder="https://…" />

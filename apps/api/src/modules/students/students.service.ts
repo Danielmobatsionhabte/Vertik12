@@ -122,8 +122,16 @@ export async function createStudent(input: CreateStudentInput) {
 
     // Enroll into a class for the active academic year, if requested.
     if (classRoomId) {
-      const classRoom = await tx.classRoom.findUnique({ where: { id: classRoomId } });
+      const classRoom = await tx.classRoom.findUnique({
+        where: { id: classRoomId },
+        include: { _count: { select: { enrollments: true } } },
+      });
       if (!classRoom) throw ApiError.notFound("Class room");
+      if (classRoom._count.enrollments >= classRoom.capacity) {
+        throw ApiError.badRequest(
+          `${classRoom.name} is full (${classRoom._count.enrollments}/${classRoom.capacity} students) — pick another section or raise its capacity`,
+        );
+      }
       await tx.enrollment.create({
         data: { studentId: student.id, classRoomId, academicYearId: classRoom.academicYearId },
       });
@@ -137,8 +145,17 @@ export async function updateStudent(id: string, input: Record<string, unknown>) 
   const student = await prisma.student.update({ where: { id }, data });
 
   if (classRoomId) {
-    const classRoom = await prisma.classRoom.findUnique({ where: { id: classRoomId } });
+    const classRoom = await prisma.classRoom.findUnique({
+      where: { id: classRoomId },
+      include: { _count: { select: { enrollments: true } } },
+    });
     if (!classRoom) throw ApiError.notFound("Class room");
+    const alreadyHere = await prisma.enrollment.findFirst({ where: { studentId: id, classRoomId } });
+    if (!alreadyHere && classRoom._count.enrollments >= classRoom.capacity) {
+      throw ApiError.badRequest(
+        `${classRoom.name} is full (${classRoom._count.enrollments}/${classRoom.capacity} students) — pick another section or raise its capacity`,
+      );
+    }
     await prisma.enrollment.upsert({
       where: { studentId_academicYearId: { studentId: id, academicYearId: classRoom.academicYearId } },
       create: { studentId: id, classRoomId, academicYearId: classRoom.academicYearId },

@@ -7,7 +7,13 @@ import { get, post, ApiClientError } from "@/lib/api";
 import { gradeLabel, humanize } from "@/lib/format";
 import { Button, Card, ErrorNote, Field, Input, PageHeader, Select } from "@/components/ui";
 
-interface ClassOption { id: string; name: string; gradeLevel: string }
+interface ClassOption {
+  id: string;
+  name: string;
+  gradeLevel: string;
+  capacity: number;
+  _count: { enrollments: number };
+}
 interface YearOption { id: string; name: string; isActive: boolean }
 
 interface GuardianForm {
@@ -140,10 +146,20 @@ export default function AdmitStudentPage() {
                 {years.map((y) => <option key={y.id} value={y.id}>{y.name}{y.isActive ? " (current)" : ""}</option>)}
               </Select>
             </Field>
-            <Field label="Class / section (optional)">
+            <Field
+              label="Class / section (optional)"
+              hint="Enrolled/capacity is shown per section — full sections can't take more students"
+            >
               <Select value={form.classRoomId} onChange={set("classRoomId")}>
                 <option value="">— Assign later —</option>
-                {gradeClasses.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                {gradeClasses.map((c) => {
+                  const full = c._count.enrollments >= c.capacity;
+                  return (
+                    <option key={c.id} value={c.id} disabled={full}>
+                      {c.name} — {c._count.enrollments}/{c.capacity} students{full ? " (FULL)" : ""}
+                    </option>
+                  );
+                })}
               </Select>
             </Field>
             <Field label="Nationality"><Input value={form.nationality} onChange={set("nationality")} /></Field>

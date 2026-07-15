@@ -5,6 +5,7 @@ import { get, post, patch, del, getSession, ApiClientError } from "@/lib/api";
 import { formatDate, gradeLabel, localDateIso } from "@/lib/format";
 import { GRADE_LEVELS } from "@vertik12/shared";
 import { Badge, Button, Card, ErrorNote, Field, Input, Modal, PageHeader, Select, Spinner } from "@/components/ui";
+import { Pager } from "@/components/data-table";
 import type { FormEvent } from "react";
 
 interface ClassRow {
@@ -25,6 +26,11 @@ export default function ClassesPage() {
   const [editing, setEditing] = useState<ClassRow | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [showYears, setShowYears] = useState(false);
+  // Client-side paging + grade filter keep the card grid usable when the
+  // school has dozens of sections.
+  const [page, setPage] = useState(1);
+  const [gradeFilter, setGradeFilter] = useState("");
+  const PER_PAGE = 12;
 
   // Assigning teachers to grades/subjects and creating classes is an admin responsibility.
   const role = getSession()?.user.role ?? "";
@@ -43,6 +49,10 @@ export default function ClassesPage() {
       </div>
     );
 
+  const filtered = gradeFilter ? classes.filter((c) => c.gradeLevel === gradeFilter) : classes;
+  const totalPages = Math.ceil(filtered.length / PER_PAGE);
+  const visible = filtered.slice((page - 1) * PER_PAGE, page * PER_PAGE);
+
   return (
     <div>
       <PageHeader
@@ -57,8 +67,14 @@ export default function ClassesPage() {
           ) : undefined
         }
       />
+      <div className="mb-4 max-w-[200px]">
+        <Select value={gradeFilter} onChange={(e) => { setGradeFilter(e.target.value); setPage(1); }}>
+          <option value="">All grades</option>
+          {GRADE_LEVELS.map((g) => <option key={g} value={g}>{gradeLabel(g)}</option>)}
+        </Select>
+      </div>
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        {classes.map((c) => {
+        {visible.map((c) => {
           const fill = Math.min(100, Math.round((c._count.enrollments / c.capacity) * 100));
           return (
             <Card key={c.id} className="p-5">
@@ -100,7 +116,11 @@ export default function ClassesPage() {
             </Card>
           );
         })}
+        {visible.length === 0 && (
+          <p className="col-span-full py-16 text-center text-sm text-slate-400">No classes for this grade yet.</p>
+        )}
       </div>
+      <Pager page={page} totalPages={totalPages} onPage={setPage} />
 
       {managing && <ManageSubjectsModal classRow={managing} onClose={() => setManaging(null)} />}
       {editing && (

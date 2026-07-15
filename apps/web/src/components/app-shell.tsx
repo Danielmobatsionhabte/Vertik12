@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { notFound, usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { BRAND, ROLE_MODULES, type ModuleKey, type Role } from "@vertik12/shared";
 import { get, getSession, setSession, post, type Session, ApiClientError, SESSION_STORAGE_KEY } from "@/lib/api";
@@ -68,6 +68,33 @@ function navForRole(role: Role) {
     .filter((group) => group.links.length > 0);
 }
 
+/**
+ * Route → module map for the client-side RBAC guard. Every dashboard route
+ * belongs to a module; a role without that module gets a 404 — the page
+ * "doesn't exist" for them, exactly like typing a random URL. The API
+ * enforces the same matrix, so this is defense in depth, not the only wall.
+ */
+const ROUTE_MODULES: Array<{ prefix: string; module: ModuleKey }> = [
+  { prefix: "/dashboard", module: "dashboard" },
+  { prefix: "/students", module: "students" },
+  { prefix: "/staff", module: "staff" },
+  { prefix: "/classes", module: "classes" },
+  { prefix: "/attendance", module: "attendance" },
+  { prefix: "/exams", module: "exams" },
+  { prefix: "/assignments", module: "assignments" },
+  { prefix: "/finance", module: "finance" },
+  { prefix: "/payroll", module: "payroll" },
+  { prefix: "/announcements", module: "announcements" },
+  { prefix: "/messages", module: "messages" },
+  { prefix: "/admin", module: "admin" },
+  { prefix: "/portal", module: "portal" },
+];
+
+function moduleForPath(pathname: string): ModuleKey | null {
+  const match = ROUTE_MODULES.find((r) => pathname === r.prefix || pathname.startsWith(r.prefix + "/"));
+  return match?.module ?? null;
+}
+
 export function AppShell({ children }: { children: ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -75,7 +102,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [checked, setChecked] = useState(false);
   const [theme, setTheme] = useState<Theme>("light");
   const [showAccount, setShowAccount] = useState(false);
-  const [unread, setUnread] = useState(0);
+  const [unread, setUnread] = useState({ messages: 0, announcements: 0 });
 
   useEffect(() => {
     initTheme();
@@ -89,17 +116,26 @@ export function AppShell({ children }: { children: ReactNode }) {
     setChecked(true);
   }, [router]);
 
-  // Unread-message badge for EVERY portal (staff, parents, students);
-  // refreshed on navigation + every minute.
+  // Unread badges (messages + announcements) for EVERY portal (staff,
+  // parents, students); refreshed on navigation + every minute, and
+  // immediately when a page signals it (e.g. Announcements marks itself
+  // seen and dispatches "vertik12:badges-refresh").
   const refreshUnread = useCallback(() => {
     if (!session) return;
-    get<{ unread: number }>("/messages/unread-count").then((d) => setUnread(d.unread)).catch(() => undefined);
+    void Promise.all([
+      get<{ unread: number }>("/messages/unread-count").catch(() => ({ unread: 0 })),
+      get<{ unread: number }>("/announcements/unread-count").catch(() => ({ unread: 0 })),
+    ]).then(([m, a]) => setUnread({ messages: m.unread, announcements: a.unread }));
   }, [session]);
 
   useEffect(() => {
     refreshUnread();
     const t = setInterval(refreshUnread, 60_000);
-    return () => clearInterval(t);
+    window.addEventListener("vertik12:badges-refresh", refreshUnread);
+    return () => {
+      clearInterval(t);
+      window.removeEventListener("vertik12:badges-refresh", refreshUnread);
+    };
   }, [refreshUnread, pathname]);
 
   // Live access revocation. The API re-checks the account on every request,
@@ -143,6 +179,16 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   if (!checked) return null; // avoid flashing protected content pre-guard
 
+  // Unauthorized module for this role ⇒ 404. A parent poking at /staff, a
+  // registrar trying /payroll, a teacher opening /admin — all get the same
+  // "page not found" as a URL that never existed.
+  if (session) {
+    const module = moduleForPath(pathname);
+    if (module && !(ROLE_MODULES[session.user.role] ?? []).includes(module)) {
+      notFound();
+    }
+  }
+
   return (
     <div className="flex min-h-screen bg-slate-50">
       {/* Sidebar (stripped from printouts) */}
@@ -163,7 +209,11 @@ export function AppShell({ children }: { children: ReactNode }) {
               <p className="mb-1 px-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">{group.section}</p>
               {group.links.map((link) => {
                 const active = pathname === link.href || pathname.startsWith(link.href + "/");
-                const showBadge = link.module === "messages" && unread > 0;
+                const badgeCount =
+                  link.module === "messages" ? unread.messages
+                  : link.module === "announcements" ? unread.announcements
+                  : 0;
+                const showBadge = badgeCount > 0;
                 return (
                   <Link
                     key={link.href}
@@ -180,9 +230,9 @@ export function AppShell({ children }: { children: ReactNode }) {
                     {showBadge && (
                       <span
                         className="rounded-full bg-rose-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white"
-                        title={`${unread} unread message(s)`}
+                        title={`${badgeCount} unread ${link.module === "messages" ? "message(s)" : "announcement(s)"}`}
                       >
-                        {unread}
+                        {badgeCount}
                       </span>
                     )}
                   </Link>

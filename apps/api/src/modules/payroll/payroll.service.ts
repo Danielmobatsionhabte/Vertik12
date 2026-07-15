@@ -166,3 +166,60 @@ export const staffPayslips = (staffId: string) =>
     include: { run: { select: { month: true, year: true, status: true } } },
     orderBy: [{ run: { year: "desc" } }, { run: { month: "desc" } }],
   });
+
+/**
+ * One payslip in full — drives the printable paystub and the emailed copy.
+ * Includes the employee, the run period and the school letterhead details.
+ */
+export async function getPayslip(id: string) {
+  const payslip = await prisma.payslip.findUnique({
+    where: { id },
+    include: {
+      run: { select: { month: true, year: true, status: true, paidAt: true } },
+      staff: {
+        include: { user: { select: { firstName: true, lastName: true, email: true } } },
+      },
+    },
+  });
+  if (!payslip) throw ApiError.notFound("Payslip");
+  const settings = await prisma.schoolSettings.findUnique({ where: { id: "school" } });
+  return {
+    ...payslip,
+    allowances: parseComponents(payslip.allowances),
+    deductions: parseComponents(payslip.deductions),
+    school: settings
+      ? { name: settings.schoolName, address: settings.address, phone: settings.phone, email: settings.email, motto: settings.motto }
+      : null,
+  };
+}
+
+/** Simple, print-friendly HTML paystub used for the emailed copy. */
+export function payslipEmailHtml(p: Awaited<ReturnType<typeof getPayslip>>): string {
+  const money = (cents: number) =>
+    new Intl.NumberFormat("en-US", { style: "currency", currency: p.currency }).format(cents / 100);
+  const period = new Date(p.run.year, p.run.month - 1, 1).toLocaleDateString("en-US", { month: "long", year: "numeric" });
+  const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+  const componentRows = (label: string, list: Component[], sign: string) =>
+    list.map((c) => `<tr><td style="padding:4px 8px;color:#475569">${esc(c.name)} (${label})</td><td style="padding:4px 8px;text-align:right">${sign}${money(c.amount)}</td></tr>`).join("");
+  return `
+  <div style="font-family:Segoe UI,Arial,sans-serif;max-width:560px;margin:0 auto;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden">
+    <div style="background:#0f172a;color:#fff;padding:20px 24px">
+      <h2 style="margin:0">${esc(p.school?.name ?? "School")} — Paystub</h2>
+      <p style="margin:4px 0 0;color:#cbd5e1">${period}</p>
+    </div>
+    <div style="padding:20px 24px">
+      <p style="margin:0 0 12px"><strong>${esc(p.staff.user.firstName)} ${esc(p.staff.user.lastName)}</strong><br/>
+      ${esc(p.staff.staffNo)} · ${esc(p.staff.designation)}</p>
+      <table style="width:100%;border-collapse:collapse;font-size:14px">
+        <tr><td style="padding:4px 8px;color:#475569">Basic salary</td><td style="padding:4px 8px;text-align:right">${money(p.basicSalary)}</td></tr>
+        ${componentRows("allowance", p.allowances, "+")}
+        ${p.bonus > 0 ? `<tr><td style="padding:4px 8px;color:#475569">Bonus</td><td style="padding:4px 8px;text-align:right">+${money(p.bonus)}</td></tr>` : ""}
+        ${componentRows("deduction", p.deductions, "−")}
+        <tr style="border-top:2px solid #0f172a;font-weight:bold">
+          <td style="padding:8px">Net pay</td><td style="padding:8px;text-align:right">${money(p.net)}</td>
+        </tr>
+      </table>
+      <p style="color:#94a3b8;font-size:12px;margin-top:16px">Status: ${p.status}${p.paidAt ? ` · Paid ${new Date(p.paidAt).toLocaleDateString()}` : ""}</p>
+    </div>
+  </div>`;
+}
