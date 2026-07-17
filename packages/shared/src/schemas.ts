@@ -1,8 +1,8 @@
 import { z } from "zod";
 import {
-  ROLES, GRADE_LEVELS, GENDERS, STUDENT_STATUSES, STAFF_TYPES, STAFF_STATUSES,
+  ROLES, GENDERS, STUDENT_STATUSES, STAFF_TYPES, STAFF_STATUSES,
   ATTENDANCE_STATUSES, PAYMENT_METHODS, FEE_FREQUENCIES, ANNOUNCEMENT_AUDIENCES,
-  DAYS_OF_WEEK, PAYMENT_PERIODS, EXAM_CATEGORIES,
+  DAYS_OF_WEEK, PAYMENT_PERIODS, EXAM_CATEGORIES, LESSON_PLAN_STATUSES,
 } from "./constants";
 
 /**
@@ -31,6 +31,13 @@ export const safeText = (max: number, min = 1) =>
 
 /** Email: normalized to lowercase, RFC length cap. */
 const email = z.string().trim().toLowerCase().email().max(254);
+
+/**
+ * Grade-level code. Grades are admin-configured per school (GradeLevelDef),
+ * so this is a shape check only — services verify the code exists in the
+ * school's ladder where it matters (admissions, class creation).
+ */
+export const gradeCode = z.string().trim().min(1).max(20).regex(/^[A-Za-z0-9 _.-]+$/, "Invalid grade code");
 
 /**
  * Password policy for NEW passwords: length-bounded (a bcrypt DoS guard)
@@ -83,13 +90,18 @@ export const createStudentSchema = z.object({
   lastName: safeText(100),
   dateOfBirth: isoDate,
   gender: z.enum(GENDERS),
-  gradeLevel: z.enum(GRADE_LEVELS),
+  gradeLevel: gradeCode,
   email: email.optional().or(z.literal("")),
   phone: phone.optional().or(z.literal("")),
-  addressLine1: safeText(200, 0).optional(),
+  // Full postal address — every part optional.
+  addressLine1: safeText(200, 0).optional(), // street
+  addressLine2: safeText(100, 0).optional(), // unit / apartment / suite
   city: safeText(100, 0).optional(),
+  state: safeText(100, 0).optional(), // state / province / region
+  postalCode: safeText(20, 0).optional(), // ZIP / postal code
   country: safeText(100, 0).optional(),
-  nationality: safeText(100, 0).optional(),
+  nationality: safeText(100, 0).optional(), // country of citizenship
+  placeOfBirth: safeText(100, 0).optional(),
   bloodGroup: safeText(5, 0).optional(),
   medicalNotes: safeText(2_000, 0).optional(),
   photoUrl: z.string().url().max(500).optional().or(z.literal("")),
@@ -141,7 +153,7 @@ export const createTermSchema = z.object({
 
 export const createClassRoomSchema = z.object({
   name: z.string().min(1), // e.g. "Grade 5 — A", "KG1 — B (West Campus)"
-  gradeLevel: z.enum(GRADE_LEVELS),
+  gradeLevel: gradeCode,
   section: z.string().min(1).default("A"),
   branch: z.string().optional().or(z.literal("")), // campus/branch label
   capacity: z.coerce.number().int().positive().default(30),
@@ -153,7 +165,7 @@ export const createSubjectSchema = z.object({
   code: z.string().min(2), // e.g. "MATH"
   name: z.string().min(2),
   description: z.string().optional(),
-  gradeLevel: z.enum(GRADE_LEVELS).optional(), // omit = offered in all grades
+  gradeLevel: gradeCode.optional(), // omit = offered in all grades
 });
 
 export const assignSubjectSchema = z.object({
@@ -300,7 +312,7 @@ export type RecordResultsInput = z.infer<typeof recordResultsSchema>;
 // ---------- finance ----------
 export const createFeeStructureSchema = z.object({
   name: safeText(150), // e.g. "Tuition — Grade 5"
-  gradeLevel: z.enum(GRADE_LEVELS).optional(), // undefined = applies to all grades
+  gradeLevel: gradeCode.optional(), // undefined = applies to all grades
   amount: money.refine((v) => v > 0, "Amount must be positive"),
   frequency: z.enum(FEE_FREQUENCIES),
   academicYearId: id,
@@ -320,7 +332,7 @@ export type CreateInvoiceInput = z.infer<typeof createInvoiceSchema>;
 
 /** Generate one invoice per active student of a grade from fee structures. */
 export const bulkInvoiceSchema = z.object({
-  gradeLevel: z.enum(GRADE_LEVELS),
+  gradeLevel: gradeCode,
   feeStructureIds: z.array(id).min(1),
   dueDate: isoDate,
 });
@@ -461,6 +473,68 @@ export const emailPayslipSchema = z.object({
   email: email.optional(),
 });
 export type EmailPayslipInput = z.infer<typeof emailPayslipSchema>;
+
+// ---------- grade levels (admin-configured ladder) ----------
+export const gradeDefSchema = z.object({
+  code: gradeCode, // stored on students/classes/subjects/fees
+  name: safeText(60), // display label, e.g. "Year 7", "KG 1"
+  sortOrder: z.coerce.number().int().min(0).max(999).default(0),
+});
+export type GradeDefInput = z.infer<typeof gradeDefSchema>;
+
+// ---------- lesson plans ----------
+export const createLessonPlanSchema = z.object({
+  gradeLevel: gradeCode,
+  subjectId: id,
+  week: z.coerce.number().int().min(1).max(52).optional(),
+  title: safeText(200),
+  objectives: safeText(5_000),
+  materials: safeText(2_000, 0).optional(),
+  activities: safeText(10_000),
+  assessment: safeText(2_000, 0).optional(),
+  notes: safeText(2_000, 0).optional(),
+  status: z.enum(LESSON_PLAN_STATUSES).default("PUBLISHED"),
+  attachment: attachmentSchema.optional(),
+});
+export type CreateLessonPlanInput = z.infer<typeof createLessonPlanSchema>;
+
+export const updateLessonPlanSchema = createLessonPlanSchema
+  .omit({ attachment: true })
+  .partial()
+  .extend({
+    attachment: attachmentSchema.optional(),
+    removeAttachment: z.boolean().optional(),
+  });
+export type UpdateLessonPlanInput = z.infer<typeof updateLessonPlanSchema>;
+
+/** Admin sign-off on a teacher's submitted plan. */
+export const reviewLessonPlanSchema = z.object({
+  action: z.enum(["APPROVE", "REJECT"]),
+  note: safeText(500, 0).optional(),
+});
+export type ReviewLessonPlanInput = z.infer<typeof reviewLessonPlanSchema>;
+
+// ---------- student documents (guardian ID, certificates…) ----------
+export const studentDocumentSchema = z.object({
+  label: safeText(100), // e.g. "Guardian ID — Father", "Birth certificate"
+  attachment: attachmentSchema, // PDF/JPG/PNG/Word, max 5 MB (webcam shots are JPEG)
+});
+export type StudentDocumentInput = z.infer<typeof studentDocumentSchema>;
+
+// ---------- student photo ----------
+export const PHOTO_MIME_TYPES = ["image/jpeg", "image/png"] as const;
+export const PHOTO_MAX_BYTES = 2 * 1024 * 1024;
+
+export const studentPhotoSchema = z.object({
+  name: safeText(200).refine((n) => !/[\\/]/.test(n), "Invalid file name"),
+  type: z.enum(PHOTO_MIME_TYPES),
+  dataBase64: z
+    .string()
+    .min(1)
+    .max(Math.ceil((PHOTO_MAX_BYTES * 4) / 3) + 4, "Photo is too large (max 2 MB)")
+    .regex(/^[A-Za-z0-9+/=]+$/, "Invalid file data"),
+});
+export type StudentPhotoInput = z.infer<typeof studentPhotoSchema>;
 
 // ---------- list queries ----------
 export const paginationSchema = z.object({

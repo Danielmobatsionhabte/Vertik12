@@ -36,23 +36,31 @@ export const STAFF_ROLES: Role[] = ["SUPER_ADMIN", "ADMIN", "REGISTRAR", "TEACHE
  */
 export const MODULES = [
   "dashboard", "students", "staff", "classes", "attendance", "exams", "assignments",
-  "finance", "payroll", "announcements", "messages", "admin", "portal",
+  "lessons", "finance", "payroll", "announcements", "messages", "admin", "portal",
 ] as const;
 export type ModuleKey = (typeof MODULES)[number];
 
 export const ROLE_MODULES: Record<Role, ModuleKey[]> = {
-  SUPER_ADMIN: ["dashboard", "students", "staff", "classes", "attendance", "exams", "assignments", "finance", "payroll", "announcements", "messages", "admin"],
-  ADMIN: ["dashboard", "students", "staff", "classes", "attendance", "exams", "assignments", "finance", "payroll", "announcements", "messages"],
+  SUPER_ADMIN: ["dashboard", "students", "staff", "classes", "attendance", "exams", "assignments", "lessons", "finance", "payroll", "announcements", "messages", "admin"],
+  ADMIN: ["dashboard", "students", "staff", "classes", "attendance", "exams", "assignments", "lessons", "finance", "payroll", "announcements", "messages"],
   // Registrar processes student fee payments (finance), but not payroll/HR.
   REGISTRAR: ["dashboard", "students", "classes", "attendance", "exams", "finance", "announcements", "messages"],
   // Teachers: academics only — no finance, payroll, HR or student admission.
-  TEACHER: ["dashboard", "students", "classes", "attendance", "exams", "assignments", "announcements", "messages"],
+  TEACHER: ["dashboard", "students", "classes", "attendance", "exams", "assignments", "lessons", "announcements", "messages"],
   ACCOUNTANT: ["dashboard", "students", "staff", "finance", "payroll", "announcements", "messages"],
   // Families also get Messages so the school can write to them directly
   // (and they can reply) — with the same unread badge as staff.
   PARENT: ["portal", "messages", "announcements"],
   STUDENT: ["portal", "messages", "announcements"],
 };
+
+/**
+ * Lesson-plan workflow. Teachers submit (PENDING) and wait for admin
+ * approval; admins publish directly. REJECTED goes back to the author with
+ * a note. DRAFT stays private to the author.
+ */
+export const LESSON_PLAN_STATUSES = ["DRAFT", "PENDING", "PUBLISHED", "REJECTED"] as const;
+export type LessonPlanStatus = (typeof LESSON_PLAN_STATUSES)[number];
 
 export const PAYMENT_PERIODS = ["MONTHLY", "YEARLY"] as const;
 export type PaymentPeriod = (typeof PAYMENT_PERIODS)[number];
@@ -82,11 +90,43 @@ export const ROLE_HOME: Record<Role, string> = {
   STUDENT: "/portal",
 };
 
-/** K-12 grade levels, ordered. "K" = Kindergarten. */
+/**
+ * DEFAULT grade ladder (K = Kindergarten). Grade levels are now
+ * admin-configurable per school (GradeLevelDef in the database) because
+ * naming varies by country — this constant only seeds the defaults for a
+ * fresh installation and orders legacy data.
+ */
 export const GRADE_LEVELS = [
   "K", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12",
 ] as const;
 export type GradeLevel = (typeof GRADE_LEVELS)[number];
+
+/** Country names for the citizenship / place-of-birth dropdowns. */
+export const COUNTRIES = [
+  "Afghanistan", "Albania", "Algeria", "Andorra", "Angola", "Antigua and Barbuda", "Argentina", "Armenia",
+  "Australia", "Austria", "Azerbaijan", "Bahamas", "Bahrain", "Bangladesh", "Barbados", "Belarus", "Belgium",
+  "Belize", "Benin", "Bhutan", "Bolivia", "Bosnia and Herzegovina", "Botswana", "Brazil", "Brunei", "Bulgaria",
+  "Burkina Faso", "Burundi", "Cabo Verde", "Cambodia", "Cameroon", "Canada", "Central African Republic", "Chad",
+  "Chile", "China", "Colombia", "Comoros", "Congo (Republic)", "Congo (DRC)", "Costa Rica", "Côte d'Ivoire",
+  "Croatia", "Cuba", "Cyprus", "Czechia", "Denmark", "Djibouti", "Dominica", "Dominican Republic", "Ecuador",
+  "Egypt", "El Salvador", "Equatorial Guinea", "Eritrea", "Estonia", "Eswatini", "Ethiopia", "Fiji", "Finland",
+  "France", "Gabon", "Gambia", "Georgia", "Germany", "Ghana", "Greece", "Grenada", "Guatemala", "Guinea",
+  "Guinea-Bissau", "Guyana", "Haiti", "Honduras", "Hungary", "Iceland", "India", "Indonesia", "Iran", "Iraq",
+  "Ireland", "Israel", "Italy", "Jamaica", "Japan", "Jordan", "Kazakhstan", "Kenya", "Kiribati", "Kosovo",
+  "Kuwait", "Kyrgyzstan", "Laos", "Latvia", "Lebanon", "Lesotho", "Liberia", "Libya", "Liechtenstein",
+  "Lithuania", "Luxembourg", "Madagascar", "Malawi", "Malaysia", "Maldives", "Mali", "Malta", "Marshall Islands",
+  "Mauritania", "Mauritius", "Mexico", "Micronesia", "Moldova", "Monaco", "Mongolia", "Montenegro", "Morocco",
+  "Mozambique", "Myanmar", "Namibia", "Nauru", "Nepal", "Netherlands", "New Zealand", "Nicaragua", "Niger",
+  "Nigeria", "North Korea", "North Macedonia", "Norway", "Oman", "Pakistan", "Palau", "Palestine", "Panama",
+  "Papua New Guinea", "Paraguay", "Peru", "Philippines", "Poland", "Portugal", "Qatar", "Romania", "Russia",
+  "Rwanda", "Saint Kitts and Nevis", "Saint Lucia", "Saint Vincent and the Grenadines", "Samoa", "San Marino",
+  "São Tomé and Príncipe", "Saudi Arabia", "Senegal", "Serbia", "Seychelles", "Sierra Leone", "Singapore",
+  "Slovakia", "Slovenia", "Solomon Islands", "Somalia", "South Africa", "South Korea", "South Sudan", "Spain",
+  "Sri Lanka", "Sudan", "Suriname", "Sweden", "Switzerland", "Syria", "Taiwan", "Tajikistan", "Tanzania",
+  "Thailand", "Timor-Leste", "Togo", "Tonga", "Trinidad and Tobago", "Tunisia", "Turkey", "Turkmenistan",
+  "Tuvalu", "Uganda", "Ukraine", "United Arab Emirates", "United Kingdom", "United States", "Uruguay",
+  "Uzbekistan", "Vanuatu", "Vatican City", "Venezuela", "Vietnam", "Yemen", "Zambia", "Zimbabwe",
+] as const;
 
 export const GENDERS = ["MALE", "FEMALE", "OTHER"] as const;
 export type Gender = (typeof GENDERS)[number];
@@ -155,5 +195,5 @@ export function formatMoney(cents: number, currency = "USD", locale = "en-US"): 
 export const BRAND = {
   appName: "Vertik12",
   poweredBy: "CloudPunkt",
-  tagline: "The global K-12 Student Information Management System",
+  tagline: "The global Student Information Management System",
 } as const;

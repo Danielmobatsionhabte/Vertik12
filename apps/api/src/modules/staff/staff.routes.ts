@@ -13,6 +13,8 @@ staffRouter.use(authenticate);
 const listQuery = paginationSchema.extend({
   staffType: z.enum(STAFF_TYPES).optional(),
   status: z.enum(STAFF_STATUSES).optional(),
+  role: z.enum(["ADMIN", "REGISTRAR", "TEACHER", "ACCOUNTANT"]).optional(),
+  department: z.string().trim().max(100).optional(),
 });
 
 staffRouter.get(
@@ -47,6 +49,18 @@ staffRouter.patch(
   validateBody(updateStaffSchema.extend({ firstName: z.string().optional(), lastName: z.string().optional() })),
   asyncHandler(async (req, res) => {
     res.json(ok(await staff.updateStaff(req.params.id, req.body), "Staff updated"));
+  }),
+);
+
+// HR status management: active / on leave / terminated / resigned.
+// Access follows automatically (termination revokes the login, re-hiring
+// restores it) — see the service for the rules.
+staffRouter.post(
+  "/:id/status",
+  requireRoles("ADMIN"),
+  validateBody(z.object({ status: z.enum(STAFF_STATUSES) })),
+  asyncHandler(async (req, res) => {
+    res.json(ok(await staff.setStaffStatus(req.params.id, req.body.status, req.user!.role), "Staff status updated"));
   }),
 );
 

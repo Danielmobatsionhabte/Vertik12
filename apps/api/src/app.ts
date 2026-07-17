@@ -19,6 +19,7 @@ import { adminRouter } from "./modules/admin/admin.routes";
 import { portalRouter } from "./modules/portal/portal.routes";
 import { messagesRouter } from "./modules/messages/messages.routes";
 import { assignmentsRouter } from "./modules/assignments/assignments.routes";
+import { lessonPlansRouter } from "./modules/lesson-plans/lesson-plans.routes";
 import { auditLogger } from "./middleware/audit";
 
 export function createApp() {
@@ -34,7 +35,7 @@ export function createApp() {
   // encoding), so they get a larger body cap than the 1 MB default.
   const uploadJson = express.json({ limit: "8mb" });
   const standardJson = express.json({ limit: "1mb" });
-  const UPLOAD_PATHS = ["/api/v1/assignments", "/api/v1/portal/assignments"];
+  const UPLOAD_PATHS = ["/api/v1/assignments", "/api/v1/portal/assignments", "/api/v1/students", "/api/v1/lesson-plans"];
   app.use((req, res, next) => {
     if (req.originalUrl === "/api/v1/finance/payments/webhook") return next();
     const parser = UPLOAD_PATHS.some((p) => req.originalUrl.startsWith(p)) ? uploadJson : standardJson;
@@ -61,6 +62,7 @@ export function createApp() {
   api.use("/portal", portalRouter);
   api.use("/messages", messagesRouter);
   api.use("/assignments", assignmentsRouter);
+  api.use("/lesson-plans", lessonPlansRouter);
   app.use("/api/v1", api);
 
   app.use((_req, res) => res.status(404).json({ success: false, message: "Route not found" }));

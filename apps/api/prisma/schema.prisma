@@ -70,13 +70,21 @@ model Student {
   status       String    @default("ACTIVE") // ACTIVE | GRADUATED | TRANSFERRED | WITHDRAWN | SUSPENDED
   email        String?
   phone        String?
-  addressLine1 String?
+  // Full postal address — every part optional.
+  addressLine1 String? // street
+  addressLine2 String? // unit / apartment / suite
   city         String?
+  state        String? // state / province / region
+  postalCode   String? // ZIP / postal code
   country      String?
-  nationality  String?
+  nationality  String? // country of citizenship
+  placeOfBirth String?
   bloodGroup   String?
   medicalNotes String?
   photoUrl     String?
+  /// Uploaded/captured photo in the document store (preferred over photoUrl).
+  photoRef     String?
+  photoType    String? // mime type of the stored photo
   admittedAt   DateTime  @default(now())
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
@@ -87,8 +95,26 @@ model Student {
   examResults           ExamResult[]
   invoices              Invoice[]
   assignmentSubmissions AssignmentSubmission[]
+  documents             StudentDocument[]
 
   @@index([gradeLevel, status])
+}
+
+/// Scanned/photographed paperwork on the student's file: guardian ID,
+/// birth certificate, transfer letter… Captured by webcam or uploaded at
+/// registration (or later); bodies live in the document store.
+model StudentDocument {
+  id           String   @id @default(cuid())
+  studentId    String
+  student      Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  label        String // e.g. "Guardian ID — Father", "Birth certificate"
+  fileRef      String // document-store key
+  fileName     String
+  fileType     String // mime type
+  uploadedById String? // user id (registrar/admin)
+  createdAt    DateTime @default(now())
+
+  @@index([studentId])
 }
 
 model Guardian {
@@ -188,12 +214,23 @@ model ClassRoom {
   @@unique([academicYearId, name])
 }
 
+/// Admin-configured grade levels. Grade naming varies by country (KG1,
+/// Year 7, Form 2, A-Level…), so the administration defines the school's
+/// own ladder instead of a hard-coded K-12. `code` is what Student /
+/// ClassRoom / Subject / FeeStructure rows store in their gradeLevel field.
+model GradeLevelDef {
+  id        String @id @default(cuid())
+  code      String @unique // "K", "1", "KG1", "Y7"…
+  name      String // display label: "Kindergarten", "Grade 1", "Year 7"…
+  sortOrder Int    @default(0)
+}
+
 model Subject {
   id          String  @id @default(cuid())
   code        String  @unique // "MATH", "CALC12"
   name        String
   description String?
-  /// Grade this subject is taught in (K-12). Null = offered in all grades.
+  /// Grade this subject is taught in. Null = offered in all grades.
   /// Subjects are created per-grade by the SUPER_ADMIN.
   gradeLevel  String?
 
@@ -201,6 +238,43 @@ model Subject {
   examResults    ExamResult[]
   timetableSlots TimetableSlot[]
   attendance     AttendanceRecord[]
+  lessonPlans    LessonPlan[]
+}
+
+/// Curriculum lesson plans, per grade × subject. The administration (or a
+/// teacher) publishes the plan every teacher of that grade/subject follows;
+/// week numbers order the plan through the term. Bodies stay in SQL (they
+/// are structured text, not blobs); optional worksheet files go to the
+/// document store like assignment attachments.
+model LessonPlan {
+  id          String   @id @default(cuid())
+  gradeLevel  String // GradeLevelDef.code
+  subjectId   String
+  subject     Subject  @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  /// Week of the term this plan covers (1-52); null = general/unscheduled.
+  week        Int?
+  title       String
+  objectives  String // what students should learn
+  materials   String? // resources / teaching aids
+  activities  String // lesson flow: intro, main activity, practice…
+  assessment  String? // how learning is checked
+  notes       String?
+  /// Workflow: DRAFT (author-private) → PENDING (teacher submitted, awaits
+  /// admin approval) → PUBLISHED (live for all teachers) | REJECTED (sent
+  /// back with a note). Admin-authored plans publish directly.
+  status      String   @default("PUBLISHED")
+  reviewNote   String? // admin's note on approve/reject
+  reviewedById String? // user id of the reviewing admin
+  reviewedAt   DateTime?
+  attachmentRef  String?
+  attachmentName String?
+  attachmentType String?
+  createdById String // user id (admin or teacher)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([gradeLevel, subjectId])
+  @@index([status])
 }
 
 model ClassSubject {
@@ -547,6 +621,10 @@ model SchoolSettings {
   sessionTimeoutMinutes Int     @default(60)
   /// Discount applied when a family pays the whole year at once (0-100).
   yearlyDiscountPercent Float   @default(0)
+  /// When true, teachers can no longer add or modify lesson plans — the
+  /// administration locks the curriculum once it is complete and re-opens
+  /// editing when revisions are allowed. Admins are never locked out.
+  lessonPlansLocked     Boolean @default(false)
   updatedAt             DateTime @updatedAt
 }
 

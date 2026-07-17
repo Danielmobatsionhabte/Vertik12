@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import {
   createStudentSchema, updateStudentSchema, paginationSchema, bulkEnrollSchema,
-  guardianPortalAccountSchema, GRADE_LEVELS, STUDENT_STATUSES,
+  guardianPortalAccountSchema, studentPhotoSchema, studentDocumentSchema, gradeCode, STUDENT_STATUSES,
 } from "@vertik12/shared";
 import { authenticate, requireRoles } from "../../middleware/auth";
 import { validateBody, validateQuery, parsedQuery } from "../../middleware/validate";
@@ -14,7 +14,7 @@ export const studentsRouter = Router();
 studentsRouter.use(authenticate);
 
 const listQuery = paginationSchema.extend({
-  gradeLevel: z.enum(GRADE_LEVELS).optional(),
+  gradeLevel: gradeCode.optional(),
   status: z.enum(STUDENT_STATUSES).optional(),
   classRoomId: z.string().optional(), // filter by section/class
 });
@@ -23,7 +23,7 @@ const listQuery = paginationSchema.extend({
 studentsRouter.get(
   "/unassigned",
   requireRoles("ADMIN", "REGISTRAR"),
-  validateQuery(z.object({ academicYearId: z.string().min(1), gradeLevel: z.enum(GRADE_LEVELS).optional() })),
+  validateQuery(z.object({ academicYearId: z.string().min(1), gradeLevel: gradeCode.optional() })),
   asyncHandler(async (req, res) => {
     const q = parsedQuery<{ academicYearId: string; gradeLevel?: string }>(req);
     res.json(ok(await students.unassignedStudents(q.academicYearId, q.gradeLevel)));
@@ -83,6 +83,74 @@ studentsRouter.delete(
   requireRoles("ADMIN", "REGISTRAR"),
   asyncHandler(async (req, res) => {
     res.json(ok(await students.withdrawStudent(req.params.id), "Student withdrawn"));
+  }),
+);
+
+// Student photo (optional; Admin/Registrar upload or capture, replace, remove).
+studentsRouter.put(
+  "/:id/photo",
+  requireRoles("ADMIN", "REGISTRAR"),
+  validateBody(studentPhotoSchema),
+  asyncHandler(async (req, res) => {
+    res.json(ok(await students.setStudentPhoto(req.params.id, req.body), "Photo saved"));
+  }),
+);
+
+studentsRouter.delete(
+  "/:id/photo",
+  requireRoles("ADMIN", "REGISTRAR"),
+  asyncHandler(async (req, res) => {
+    res.json(ok(await students.removeStudentPhoto(req.params.id), "Photo removed"));
+  }),
+);
+
+// Staff see any student's photo; parents/students only their own (checked
+// in the service). Served inline so <img> previews render directly.
+studentsRouter.get(
+  "/:id/photo",
+  requireRoles("ADMIN", "REGISTRAR", "TEACHER", "ACCOUNTANT", "PARENT", "STUDENT"),
+  asyncHandler(async (req, res) => {
+    const photo = await students.getStudentPhoto(req.params.id, { userId: req.user!.sub, role: req.user!.role });
+    res.setHeader("Content-Type", photo.type);
+    res.setHeader("Cache-Control", "private, max-age=300");
+    res.send(photo.buffer);
+  }),
+);
+
+// Documents on file (guardian ID, certificates…) — webcam shots or uploads.
+studentsRouter.post(
+  "/:id/documents",
+  requireRoles("ADMIN", "REGISTRAR"),
+  validateBody(studentDocumentSchema),
+  asyncHandler(async (req, res) => {
+    res.status(201).json(ok(await students.addStudentDocument(req.params.id, req.body, req.user!.sub), "Document saved"));
+  }),
+);
+
+studentsRouter.get(
+  "/:id/documents",
+  requireRoles("ADMIN", "REGISTRAR", "TEACHER", "ACCOUNTANT"),
+  asyncHandler(async (req, res) => {
+    res.json(ok(await students.listStudentDocuments(req.params.id)));
+  }),
+);
+
+studentsRouter.get(
+  "/:id/documents/:docId",
+  requireRoles("ADMIN", "REGISTRAR", "TEACHER", "ACCOUNTANT"),
+  asyncHandler(async (req, res) => {
+    const doc = await students.getStudentDocument(req.params.id, req.params.docId);
+    res.setHeader("Content-Type", doc.type);
+    res.setHeader("Content-Disposition", `attachment; filename="${doc.name.replace(/[^\w.\- ]+/g, "_")}"`);
+    res.send(doc.buffer);
+  }),
+);
+
+studentsRouter.delete(
+  "/:id/documents/:docId",
+  requireRoles("ADMIN", "REGISTRAR"),
+  asyncHandler(async (req, res) => {
+    res.json(ok(await students.removeStudentDocument(req.params.id, req.params.docId), "Document removed"));
   }),
 );
 

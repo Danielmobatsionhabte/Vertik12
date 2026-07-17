@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import type { Paginated } from "@vertik12/shared";
-import { STAFF_TYPES } from "@vertik12/shared";
+import { STAFF_TYPES, STAFF_STATUSES } from "@vertik12/shared";
 import { get, post, put, del, getSession, ApiClientError } from "@/lib/api";
 import { formatMoney, gradeLabel, humanize } from "@/lib/format";
 import { Badge, Button, Card, ErrorNote, Field, Input, Modal, PageHeader, Select, Spinner } from "@/components/ui";
@@ -24,9 +24,71 @@ const emptyForm = {
   designation: "", department: "", phone: "", joinDate: "",
 };
 
+/**
+ * HR status management: the admin moves an employee between Active,
+ * On leave, Terminated and Resigned. Portal access follows automatically —
+ * termination/resignation revokes the login, re-activating restores it.
+ */
+function StaffStatusModal({ staff, onClose, onSaved }: {
+  staff: StaffRow;
+  onClose: () => void;
+  onSaved: () => Promise<void>;
+}) {
+  const [status, setStatus] = useState(staff.status);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const hint =
+    status === "TERMINATED" || status === "RESIGNED"
+      ? "⚠ Their portal login is revoked and open sessions are signed out immediately."
+      : status === "ACTIVE" && staff.status !== "ACTIVE"
+        ? "Their portal login is restored."
+        : status === "ON_LEAVE"
+          ? "Employment continues — portal access is unchanged."
+          : undefined;
+
+  async function onSubmit(e: FormEvent) {
+    e.preventDefault();
+    setSaving(true);
+    setError(null);
+    try {
+      await post(`/staff/${staff.id}/status`, { status });
+      await onSaved();
+    } catch (err) {
+      setError(err instanceof ApiClientError ? err.message : "Failed to update the status");
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal open title={`Employment status — ${staff.user.firstName} ${staff.user.lastName}`} onClose={onClose}>
+      <form onSubmit={onSubmit} className="space-y-4">
+        <p className="text-sm text-slate-500">
+          {staff.staffNo} · {staff.designation} · currently <Badge>{staff.status}</Badge>
+        </p>
+        <Field label="New status" hint={hint}>
+          <Select value={status} onChange={(e) => setStatus(e.target.value)}>
+            {STAFF_STATUSES.map((s) => <option key={s} value={s}>{humanize(s)}</option>)}
+          </Select>
+        </Field>
+        <ErrorNote message={error} />
+        <div className="flex justify-end gap-3">
+          <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button type="submit" loading={saving} disabled={status === staff.status}>Save status</Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
 export default function StaffPage() {
   const [data, setData] = useState<Paginated<StaffRow> | null>(null);
   const [page, setPage] = useState(1);
+  // HR search & filters (name/email/staff no/designation/department + dropdowns).
+  const [search, setSearch] = useState("");
+  const [typeFilter, setTypeFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [roleFilter, setRoleFilter] = useState("");
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   const [form, setForm] = useState(emptyForm);
@@ -35,6 +97,7 @@ export default function StaffPage() {
   const [tempPassword, setTempPassword] = useState<string | null>(null);
   const [assigning, setAssigning] = useState<StaffRow | null>(null);
   const [salaryFor, setSalaryFor] = useState<StaffRow | null>(null);
+  const [statusFor, setStatusFor] = useState<StaffRow | null>(null);
   const isAdmin = ["SUPER_ADMIN", "ADMIN"].includes(getSession()?.user.role ?? "");
 
   async function toggleAccess(s: StaffRow) {
@@ -52,16 +115,23 @@ export default function StaffPage() {
 
   const load = useCallback(async () => {
     setLoading(true);
+    const params = new URLSearchParams({ page: String(page), pageSize: "20" });
+    if (search) params.set("search", search);
+    if (typeFilter) params.set("staffType", typeFilter);
+    if (statusFilter) params.set("status", statusFilter);
+    if (roleFilter) params.set("role", roleFilter);
     try {
-      setData(await get<Paginated<StaffRow>>(`/staff?page=${page}&pageSize=20`));
+      setData(await get<Paginated<StaffRow>>(`/staff?${params}`));
     } finally {
       setLoading(false);
     }
-  }, [page]);
+  }, [page, search, typeFilter, statusFilter, roleFilter]);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    // Debounce so typing in the search box doesn't fire a request per key.
+    const t = setTimeout(() => void load(), search ? 300 : 0);
+    return () => clearTimeout(t);
+  }, [load, search]);
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -106,11 +176,31 @@ export default function StaffPage() {
       )}
 
       <Card>
+        <div className="flex flex-wrap gap-3 border-b border-slate-100 p-4">
+          <Input
+            placeholder="Search name, email, staff no, designation, department…"
+            className="max-w-xs"
+            value={search}
+            onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+          />
+          <Select className="max-w-[170px]" value={typeFilter} onChange={(e) => { setTypeFilter(e.target.value); setPage(1); }}>
+            <option value="">All types</option>
+            {STAFF_TYPES.map((t) => <option key={t} value={t}>{humanize(t)}</option>)}
+          </Select>
+          <Select className="max-w-[170px]" value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}>
+            <option value="">All statuses</option>
+            {STAFF_STATUSES.map((s) => <option key={s} value={s}>{humanize(s)}</option>)}
+          </Select>
+          <Select className="max-w-[170px]" value={roleFilter} onChange={(e) => { setRoleFilter(e.target.value); setPage(1); }}>
+            <option value="">All roles</option>
+            {["ADMIN", "REGISTRAR", "TEACHER", "ACCOUNTANT"].map((r) => <option key={r} value={r}>{humanize(r)}</option>)}
+          </Select>
+        </div>
         <DataTable
           loading={loading}
           rows={data?.items ?? []}
           keyFor={(s) => s.id}
-          emptyTitle="No staff yet"
+          emptyTitle="No staff match these filters"
           columns={[
             { header: "Staff No", cell: (s) => <span className="font-mono text-xs">{s.staffNo}</span> },
             { header: "Name", cell: (s) => <span className="font-medium text-slate-900">{s.user.firstName} {s.user.lastName}</span> },
@@ -126,29 +216,40 @@ export default function StaffPage() {
             {
               header: "",
               cell: (s) =>
-                isAdmin && s.status === "ACTIVE" ? (
+                isAdmin ? (
                   <span className="flex flex-wrap gap-2">
-                    {s.staffType === "TEACHING" && (
-                      <button
-                        className="text-xs font-medium text-brand-600 hover:underline"
-                        onClick={(e) => { e.stopPropagation(); setAssigning(s); }}
-                      >
-                        Assign subjects
-                      </button>
-                    )}
+                    {/* Employment status is manageable in every state (re-hire too). */}
                     <button
                       className="text-xs font-medium text-brand-600 hover:underline"
-                      onClick={(e) => { e.stopPropagation(); setSalaryFor(s); }}
+                      onClick={(e) => { e.stopPropagation(); setStatusFor(s); }}
                     >
-                      Set salary
+                      Status
                     </button>
-                    {/* Registrar access can only be revoked by the Super Admin. */}
-                    <button
-                      className={`text-xs font-medium hover:underline ${(s.user.isActive ?? true) ? "text-rose-600" : "text-emerald-600"}`}
-                      onClick={(e) => { e.stopPropagation(); void toggleAccess(s); }}
-                    >
-                      {(s.user.isActive ?? true) ? "Revoke access" : "Grant access"}
-                    </button>
+                    {s.status === "ACTIVE" && (
+                      <>
+                        {s.staffType === "TEACHING" && (
+                          <button
+                            className="text-xs font-medium text-brand-600 hover:underline"
+                            onClick={(e) => { e.stopPropagation(); setAssigning(s); }}
+                          >
+                            Assign subjects
+                          </button>
+                        )}
+                        <button
+                          className="text-xs font-medium text-brand-600 hover:underline"
+                          onClick={(e) => { e.stopPropagation(); setSalaryFor(s); }}
+                        >
+                          Set salary
+                        </button>
+                        {/* Registrar access can only be revoked by the Super Admin. */}
+                        <button
+                          className={`text-xs font-medium hover:underline ${(s.user.isActive ?? true) ? "text-rose-600" : "text-emerald-600"}`}
+                          onClick={(e) => { e.stopPropagation(); void toggleAccess(s); }}
+                        >
+                          {(s.user.isActive ?? true) ? "Revoke access" : "Grant access"}
+                        </button>
+                      </>
+                    )}
                   </span>
                 ) : null,
             },
@@ -158,6 +259,16 @@ export default function StaffPage() {
       </Card>
 
       <ErrorNote message={error} />
+      {statusFor && (
+        <StaffStatusModal
+          staff={statusFor}
+          onClose={() => setStatusFor(null)}
+          onSaved={async () => {
+            setStatusFor(null);
+            await load();
+          }}
+        />
+      )}
       {assigning && <AssignSubjectsModal teacher={assigning} onClose={() => setAssigning(null)} />}
       {salaryFor && (
         <SalaryModal

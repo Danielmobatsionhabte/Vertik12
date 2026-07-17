@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import {
   createAcademicYearSchema, createTermSchema, createClassRoomSchema,
-  createSubjectSchema, assignSubjectSchema, timetableSlotSchema,
+  createSubjectSchema, assignSubjectSchema, timetableSlotSchema, gradeDefSchema,
 } from "@vertik12/shared";
 import { authenticate, requireRoles } from "../../middleware/auth";
 import { validateBody } from "../../middleware/validate";
@@ -12,6 +12,29 @@ import * as academics from "./academics.service";
 
 export const academicsRouter = Router();
 academicsRouter.use(authenticate);
+
+// Grade levels -----------------------------------------------------------
+// Every portal reads the ladder (dropdowns everywhere); only the
+// administration shapes it — grade naming varies by country.
+academicsRouter.get("/grades", asyncHandler(async (_req, res) => {
+  res.json(ok(await academics.listGrades()));
+}));
+
+academicsRouter.post("/grades", requireRoles("ADMIN"), validateBody(gradeDefSchema),
+  asyncHandler(async (req, res) => {
+    res.status(201).json(ok(await academics.createGrade(req.body), "Grade level added"));
+  }));
+
+academicsRouter.patch("/grades/:id", requireRoles("ADMIN"),
+  validateBody(gradeDefSchema.pick({ name: true, sortOrder: true }).partial()),
+  asyncHandler(async (req, res) => {
+    res.json(ok(await academics.updateGrade(req.params.id, req.body), "Grade level updated"));
+  }));
+
+academicsRouter.delete("/grades/:id", requireRoles("ADMIN"),
+  asyncHandler(async (req, res) => {
+    res.json(ok(await academics.deleteGrade(req.params.id), "Grade level removed"));
+  }));
 
 // Academic years -------------------------------------------------------
 academicsRouter.get("/years", asyncHandler(async (_req, res) => {

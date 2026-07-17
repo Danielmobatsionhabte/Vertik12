@@ -4,8 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import type { Paginated } from "@vertik12/shared";
-import { GRADE_LEVELS } from "@vertik12/shared";
 import { get, post, getSession, ApiClientError } from "@/lib/api";
+import { useGrades } from "@/lib/grades";
 import { fullName, gradeLabel } from "@/lib/format";
 import { Badge, Button, Card, ErrorNote, Field, Input, Modal, PageHeader, Select, Spinner } from "@/components/ui";
 import { DataTable, Pager } from "@/components/data-table";
@@ -33,6 +33,7 @@ export default function StudentsPage() {
   const [classes, setClasses] = useState<ClassOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAssign, setShowAssign] = useState(false);
+  const grades = useGrades();
 
   const canManage = ["SUPER_ADMIN", "ADMIN", "REGISTRAR"].includes(getSession()?.user.role ?? "");
 
@@ -98,9 +99,9 @@ export default function StudentsPage() {
             }}
           >
             <option value="">All grades</option>
-            {GRADE_LEVELS.map((g) => (
-              <option key={g} value={g}>
-                {gradeLabel(g)}
+            {grades.map((g) => (
+              <option key={g.code} value={g.code}>
+                {g.name}
               </option>
             ))}
           </Select>
@@ -164,6 +165,7 @@ interface YearOption { id: string; name: string; isActive: boolean }
  * a class and enrols them in bulk.
  */
 function AssignToYearModal({ onClose, onAssigned }: { onClose: () => void; onAssigned: () => Promise<void> }) {
+  const grades = useGrades();
   const [years, setYears] = useState<YearOption[]>([]);
   const [yearId, setYearId] = useState("");
   const [grade, setGrade] = useState("");
@@ -234,7 +236,7 @@ function AssignToYearModal({ onClose, onAssigned }: { onClose: () => void; onAss
           <Field label="Grade filter">
             <Select value={grade} onChange={(e) => { setGrade(e.target.value); setClassRoomId(""); }} className="!w-44">
               <option value="">All grades</option>
-              {GRADE_LEVELS.map((g) => <option key={g} value={g}>{gradeLabel(g)}</option>)}
+              {grades.map((g) => <option key={g.code} value={g.code}>{g.name}</option>)}
             </Select>
           </Field>
           <Field label="Enrol into class">

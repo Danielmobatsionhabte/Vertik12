@@ -21,18 +21,29 @@ const visitCache = new Set<string>();
 setInterval(() => visitCache.clear(), 6 * 60 * 60 * 1000).unref(); // guard the Set's size across day rollovers
 
 function recordVisit(userId: string, role: string) {
-  const today = new Date();
-  const date = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
-  const key = `${userId}:${date.toISOString().slice(0, 10)}`;
-  if (visitCache.has(key)) return;
-  visitCache.add(key);
-  prisma.dailyVisit
-    .upsert({
-      where: { userId_date: { userId, date } },
-      create: { userId, role, date },
-      update: {},
-    })
-    .catch(() => visitCache.delete(key)); // retry on the next request
+  // Fully isolated from the request: any failure here — a stale Prisma
+  // client without the DailyVisit model, a DB hiccup — must be swallowed,
+  // never surfaced as a 500. Promise.resolve().then(...) also converts a
+  // synchronous throw (e.g. prisma.dailyVisit undefined) into a caught
+  // rejection instead of blowing up the auth chain.
+  try {
+    const today = new Date();
+    const date = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+    const key = `${userId}:${date.toISOString().slice(0, 10)}`;
+    if (visitCache.has(key)) return;
+    visitCache.add(key);
+    Promise.resolve()
+      .then(() =>
+        prisma.dailyVisit.upsert({
+          where: { userId_date: { userId, date } },
+          create: { userId, role, date },
+          update: {},
+        }),
+      )
+      .catch(() => visitCache.delete(key)); // retry on the next request
+  } catch {
+    /* visitor tracking is best-effort — never let it break a request */
+  }
 }
 
 /**

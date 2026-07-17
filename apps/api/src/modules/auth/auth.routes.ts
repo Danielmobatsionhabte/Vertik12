@@ -4,7 +4,7 @@ import { z } from "zod";
 import { authenticate } from "../../middleware/auth";
 import { validateBody } from "../../middleware/validate";
 import { asyncHandler } from "../../middleware/error-handler";
-import { loginRateLimit } from "../../middleware/rate-limit";
+import { loginRateLimit, refreshRateLimit, changePasswordRateLimit } from "../../middleware/rate-limit";
 import { ok } from "../../lib/pagination";
 import * as auth from "./auth.service";
 
@@ -23,6 +23,7 @@ const refreshSchema = z.object({ refreshToken: z.string().min(1) });
 
 authRouter.post(
   "/refresh",
+  refreshRateLimit,
   validateBody(refreshSchema),
   asyncHandler(async (req, res) => {
     res.json(ok(await auth.refresh(req.body.refreshToken)));
@@ -49,6 +50,7 @@ authRouter.get(
 authRouter.post(
   "/change-password",
   authenticate,
+  changePasswordRateLimit,
   validateBody(changePasswordSchema),
   asyncHandler(async (req, res) => {
     await auth.changePassword(req.user!.sub, req.body.currentPassword, req.body.newPassword);

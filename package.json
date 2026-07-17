@@ -2,7 +2,7 @@
   "name": "vertik12",
   "version": "1.0.0",
   "private": true,
-  "description": "Vertik12 — Global K-12 Student Information Management System. Powered by CloudPunkt.",
+  "description": "Vertik12 — The global Student Information Management System. Powered by CloudPunkt.",
   "workspaces": [
     "apps/*",
     "packages/*"

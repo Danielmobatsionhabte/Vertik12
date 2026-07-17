@@ -156,7 +156,7 @@ export default function AttendancePage() {
             className="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none"
           />
         </Field>
-        <div className="ml-auto flex gap-2 print:hidden">
+        <div className="ml-auto flex flex-wrap gap-2 print:hidden">
           <Button variant="secondary" onClick={() => window.print()}>🖨 Print register</Button>
           <Button variant="secondary" onClick={() => markAll("PRESENT")}>All present</Button>
           <Button onClick={save} loading={saving}>Save register</Button>

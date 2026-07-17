@@ -3,8 +3,9 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import Link from "next/link";
 import type { Paginated } from "@vertik12/shared";
-import { FEE_FREQUENCIES, GRADE_LEVELS, INVOICE_STATUSES, PAYMENT_METHODS, PAYMENT_PERIODS, PAYMENT_STATUSES } from "@vertik12/shared";
+import { FEE_FREQUENCIES, INVOICE_STATUSES, PAYMENT_METHODS, PAYMENT_PERIODS, PAYMENT_STATUSES } from "@vertik12/shared";
 import { get, post, del, getSession, ApiClientError } from "@/lib/api";
+import { useGrades } from "@/lib/grades";
 import { formatDate, formatMoney, fullName, gradeLabel, humanize } from "@/lib/format";
 import { Badge, Button, Card, ErrorNote, Field, Input, Modal, PageHeader, Select, StatCard } from "@/components/ui";
 import { DataTable, Pager } from "@/components/data-table";
@@ -39,6 +40,7 @@ interface YearOption { id: string; name: string; isActive: boolean }
  * invoicing pull from these presets — amounts vary by grade.
  */
 function FeeStructuresModal({ canManage, onClose }: { canManage: boolean; onClose: () => void }) {
+  const grades = useGrades();
   const [fees, setFees] = useState<FeeStructureRow[] | null>(null);
   const [years, setYears] = useState<YearOption[]>([]);
   const [form, setForm] = useState({ name: "", gradeLevel: "", amount: "", frequency: "MONTHLY", academicYearId: "" });
@@ -126,7 +128,7 @@ function FeeStructuresModal({ canManage, onClose }: { canManage: boolean; onClos
               <Field label="Grade">
                 <Select value={form.gradeLevel} onChange={(e) => setForm((f) => ({ ...f, gradeLevel: e.target.value }))}>
                   <option value="">All grades</option>
-                  {GRADE_LEVELS.map((g) => <option key={g} value={g}>{gradeLabel(g)}</option>)}
+                  {grades.map((g) => <option key={g.code} value={g.code}>{g.name}</option>)}
                 </Select>
               </Field>
               <Field label="Amount (USD)"><Input type="number" step="0.01" min="0.01" value={form.amount} onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))} required /></Field>
@@ -589,6 +591,7 @@ interface Overview {
 }
 
 export default function FinancePage() {
+  const grades = useGrades();
   const [overview, setOverview] = useState<Overview | null>(null);
   const [data, setData] = useState<Paginated<InvoiceRow> | null>(null);
   const [page, setPage] = useState(1);
@@ -751,7 +754,7 @@ export default function FinancePage() {
           </Select>
           <Select className="max-w-[170px]" value={gradeFilter} onChange={(e) => { setGradeFilter(e.target.value); setPage(1); }}>
             <option value="">All grades</option>
-            {GRADE_LEVELS.map((g) => <option key={g} value={g}>{gradeLabel(g)}</option>)}
+            {grades.map((g) => <option key={g.code} value={g.code}>{g.name}</option>)}
           </Select>
         </div>
 

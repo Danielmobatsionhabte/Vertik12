@@ -31,6 +31,30 @@ export async function fileToAttachment(file: File): Promise<AttachmentInput> {
 }
 
 /**
+ * Student photo variant: JPEG/PNG only, 2 MB cap — matches the API's
+ * studentPhotoSchema. Camera captures on phones come through the same
+ * <input type="file"> with `capture`, so this covers upload AND capture.
+ */
+export async function fileToPhoto(file: File): Promise<{ name: string; type: string; dataBase64: string }> {
+  if (!["image/jpeg", "image/png"].includes(file.type)) {
+    throw new Error("Only JPG and PNG photos are accepted");
+  }
+  if (file.size > 2 * 1024 * 1024) {
+    throw new Error("The photo is too large — 2 MB maximum");
+  }
+  const dataBase64 = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result);
+      resolve(result.slice(result.indexOf(",") + 1));
+    };
+    reader.onerror = () => reject(new Error("Could not read the photo"));
+    reader.readAsDataURL(file);
+  });
+  return { name: file.name, type: file.type, dataBase64 };
+}
+
+/**
  * Download a protected attachment (Authorization header required, so a
  * plain <a href> won't do): fetch as a blob, then trigger a save.
  */

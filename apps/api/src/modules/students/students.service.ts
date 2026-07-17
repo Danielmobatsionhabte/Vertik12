@@ -5,6 +5,10 @@ import { prisma } from "../../lib/prisma";
 import { ApiError } from "../../lib/errors";
 import { hashPassword } from "../../lib/auth-tokens";
 import { paginate, toSkipTake } from "../../lib/pagination";
+import { assertGradeExists } from "../academics/academics.service";
+import { documentStore } from "../../lib/document-store";
+
+const PHOTOS = "student-photos"; // document-store collection
 
 /** Sequential, human-readable admission numbers: VRT-2026-0001 */
 async function nextAdmissionNo(): Promise<string> {
@@ -101,6 +105,7 @@ export async function getStudent(id: string, viewerRole: string) {
 
 export async function createStudent(input: CreateStudentInput) {
   const { guardians, classRoomId, ...data } = input;
+  await assertGradeExists(input.gradeLevel); // ladder is admin-configured
 
   return prisma.$transaction(async (tx) => {
     const student = await tx.student.create({
@@ -168,6 +173,108 @@ export async function updateStudent(id: string, input: Record<string, unknown>) 
 /** Soft delete: mark WITHDRAWN. Historical records (grades, invoices) stay intact. */
 export async function withdrawStudent(id: string) {
   return prisma.student.update({ where: { id }, data: { status: "WITHDRAWN" } });
+}
+
+// ==================== student photo ====================
+
+/**
+ * Registrar/Admin uploads or captures the student's picture (optional,
+ * replaceable any time). The image body lives in the document store; the
+ * SQL row keeps only the reference.
+ */
+export async function setStudentPhoto(id: string, photo: { name: string; type: string; dataBase64: string }) {
+  const student = await prisma.student.findUnique({ where: { id } });
+  if (!student) throw ApiError.notFound("Student");
+  const photoRef = await documentStore.put(PHOTOS, { name: photo.name, type: photo.type, data: photo.dataBase64 });
+  await prisma.student.update({ where: { id }, data: { photoRef, photoType: photo.type } });
+  return { photoRef };
+}
+
+export async function removeStudentPhoto(id: string) {
+  const student = await prisma.student.findUnique({ where: { id } });
+  if (!student) throw ApiError.notFound("Student");
+  return prisma.student.update({ where: { id }, data: { photoRef: null, photoType: null } });
+}
+
+/**
+ * Streams the stored photo. Staff may view any student; a parent only
+ * their own children (the portal shows the child's picture too).
+ */
+export async function getStudentPhoto(id: string, viewer: { userId: string; role: string }) {
+  const student = await prisma.student.findUnique({ where: { id }, select: { photoRef: true, photoType: true } });
+  if (!student?.photoRef) throw ApiError.notFound("Photo");
+  if (viewer.role === "PARENT") {
+    const link = await prisma.studentGuardian.findFirst({
+      where: { studentId: id, guardian: { is: { userId: viewer.userId } } },
+    });
+    if (!link) throw ApiError.forbidden("You do not have access to this student's records");
+  } else if (viewer.role === "STUDENT") {
+    const self = await prisma.student.findFirst({ where: { id, userId: viewer.userId } });
+    if (!self) throw ApiError.forbidden("You can only view your own photo");
+  }
+  const doc = await documentStore.get(PHOTOS, student.photoRef);
+  if (!doc) throw ApiError.notFound("Photo");
+  return {
+    type: (doc.type as string) ?? student.photoType ?? "image/jpeg",
+    buffer: Buffer.from((doc.data as string) ?? "", "base64"),
+  };
+}
+
+// ==================== student documents ====================
+
+const DOCUMENTS = "student-documents"; // document-store collection
+
+/**
+ * Paperwork on the student's file (guardian ID, birth certificate…),
+ * captured by webcam or uploaded. Registrar/Admin manage; staff can read.
+ */
+export async function addStudentDocument(
+  studentId: string,
+  input: { label: string; attachment: { name: string; type: string; dataBase64: string } },
+  uploadedById: string,
+) {
+  const student = await prisma.student.findUnique({ where: { id: studentId } });
+  if (!student) throw ApiError.notFound("Student");
+  const fileRef = await documentStore.put(DOCUMENTS, {
+    name: input.attachment.name,
+    type: input.attachment.type,
+    data: input.attachment.dataBase64,
+  });
+  return prisma.studentDocument.create({
+    data: {
+      studentId,
+      label: input.label,
+      fileRef,
+      fileName: input.attachment.name,
+      fileType: input.attachment.type,
+      uploadedById,
+    },
+  });
+}
+
+export const listStudentDocuments = (studentId: string) =>
+  prisma.studentDocument.findMany({
+    where: { studentId },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, label: true, fileName: true, fileType: true, createdAt: true },
+  });
+
+export async function getStudentDocument(studentId: string, docId: string) {
+  const doc = await prisma.studentDocument.findFirst({ where: { id: docId, studentId } });
+  if (!doc) throw ApiError.notFound("Document");
+  const stored = await documentStore.get(DOCUMENTS, doc.fileRef);
+  if (!stored) throw ApiError.notFound("Document");
+  return {
+    name: doc.fileName,
+    type: doc.fileType,
+    buffer: Buffer.from((stored.data as string) ?? "", "base64"),
+  };
+}
+
+export async function removeStudentDocument(studentId: string, docId: string) {
+  const doc = await prisma.studentDocument.findFirst({ where: { id: docId, studentId } });
+  if (!doc) throw ApiError.notFound("Document");
+  return prisma.studentDocument.delete({ where: { id: docId } });
 }
 
 // ==================== academic-year enrollment (rollover) ====================

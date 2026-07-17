@@ -2,10 +2,11 @@
 
 import Link from "next/link";
 import { notFound, usePathname, useRouter } from "next/navigation";
-import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { BRAND, ROLE_MODULES, type ModuleKey, type Role } from "@vertik12/shared";
 import { get, getSession, setSession, post, type Session, ApiClientError, SESSION_STORAGE_KEY } from "@/lib/api";
 import { applyTheme, getTheme, initTheme, type Theme } from "@/lib/theme";
+import { isSoundEnabled, setSoundEnabled, playNotificationChime } from "@/lib/sound";
 import { Button, ErrorNote, Field, Input, Modal } from "@/components/ui";
 
 /**
@@ -41,6 +42,7 @@ const NAV: Array<{ section: string; links: NavLink[] }> = [
       { href: "/attendance", label: "Attendance", icon: "🗓", module: "attendance" },
       { href: "/exams", label: "Exams & Grades", icon: "📝", module: "exams" },
       { href: "/assignments", label: "Assignments", icon: "📚", module: "assignments" },
+      { href: "/lesson-plans", label: "Lesson plans", icon: "📖", module: "lessons" },
       { href: "/exams/approvals", label: "Result approvals", icon: "✔️", module: "exams" },
     ],
   },
@@ -82,6 +84,7 @@ const ROUTE_MODULES: Array<{ prefix: string; module: ModuleKey }> = [
   { prefix: "/attendance", module: "attendance" },
   { prefix: "/exams", module: "exams" },
   { prefix: "/assignments", module: "assignments" },
+  { prefix: "/lesson-plans", module: "lessons" },
   { prefix: "/finance", module: "finance" },
   { prefix: "/payroll", module: "payroll" },
   { prefix: "/announcements", module: "announcements" },
@@ -103,6 +106,21 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [theme, setTheme] = useState<Theme>("light");
   const [showAccount, setShowAccount] = useState(false);
   const [unread, setUnread] = useState({ messages: 0, announcements: 0 });
+  // Previous unread counts — a RISE means something new arrived → chime.
+  // null until the first poll so loading an already-full inbox stays silent.
+  const prevUnread = useRef<{ messages: number; announcements: number } | null>(null);
+  const [soundOn, setSoundOn] = useState(true);
+  // Mobile: the sidebar becomes a slide-in drawer (parents/teachers on phones).
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  useEffect(() => {
+    setSoundOn(isSoundEnabled());
+  }, []);
+
+  // Navigating closes the drawer so the next page is immediately visible.
+  useEffect(() => {
+    setSidebarOpen(false);
+  }, [pathname]);
 
   useEffect(() => {
     initTheme();
@@ -125,7 +143,17 @@ export function AppShell({ children }: { children: ReactNode }) {
     void Promise.all([
       get<{ unread: number }>("/messages/unread-count").catch(() => ({ unread: 0 })),
       get<{ unread: number }>("/announcements/unread-count").catch(() => ({ unread: 0 })),
-    ]).then(([m, a]) => setUnread({ messages: m.unread, announcements: a.unread }));
+    ]).then(([m, a]) => {
+      const next = { messages: m.unread, announcements: a.unread };
+      // New message or announcement since the last poll → play the chime
+      // (first poll only sets the baseline, so a full inbox stays quiet).
+      const prev = prevUnread.current;
+      if (prev && (next.messages > prev.messages || next.announcements > prev.announcements)) {
+        playNotificationChime();
+      }
+      prevUnread.current = next;
+      setUnread(next);
+    });
   }, [session]);
 
   useEffect(() => {
@@ -190,23 +218,48 @@ export function AppShell({ children }: { children: ReactNode }) {
   }
 
   return (
-    <div className="flex min-h-screen bg-slate-50">
-      {/* Sidebar (stripped from printouts) */}
-      <aside className="fixed inset-y-0 left-0 z-40 flex w-60 flex-col border-r border-slate-200 bg-white print:hidden">
-        <div className="flex h-16 items-center gap-2.5 border-b border-slate-100 px-5">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-brand-500 via-brand-600 to-brand-800 font-bold text-white shadow-md">
+    <div className="app-backdrop flex min-h-screen">
+      {/* Mobile drawer backdrop */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 z-40 bg-slate-950/60 backdrop-blur-sm lg:hidden print:hidden"
+          onClick={() => setSidebarOpen(false)}
+          aria-hidden
+        />
+      )}
+
+      {/* Sidebar — blue-black chrome. Fixed on desktop; slide-in drawer on
+          mobile (parents/teachers use their phones). Stripped from printouts. */}
+      <aside
+        className={
+          "fixed inset-y-0 left-0 z-50 flex w-60 transform flex-col border-r border-white/10 " +
+          "bg-gradient-to-b from-[#070b17] via-[#0b1226] to-[#151038] transition-transform duration-200 print:hidden " +
+          (sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0")
+        }
+      >
+        <div className="flex h-16 items-center gap-2.5 border-b border-white/10 px-5">
+          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-brand-gradient bg-[length:150%_150%] font-bold text-white shadow-brand-glow animate-gradient-pan bg-gradient-animated">
             V
           </div>
-          <div>
-            <p className="text-sm font-semibold text-slate-900">{BRAND.appName}</p>
-            <p className="text-[10px] uppercase tracking-wider text-slate-400">School OS</p>
+          <div className="flex-1">
+            <p className="bg-gradient-to-r from-brand-300 via-accent-300 to-fuchsia-300 bg-clip-text text-sm font-bold text-transparent">
+              {BRAND.appName}
+            </p>
+            <p className="text-[10px] uppercase tracking-wider text-slate-500">School OS</p>
           </div>
+          <button
+            className="rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-white lg:hidden"
+            onClick={() => setSidebarOpen(false)}
+            aria-label="Close menu"
+          >
+            ✕
+          </button>
         </div>
 
         <nav className="flex-1 overflow-y-auto px-3 py-4">
           {(session ? navForRole(session.user.role) : []).map((group) => (
             <div key={group.section} className="mb-4">
-              <p className="mb-1 px-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">{group.section}</p>
+              <p className="mb-1 px-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">{group.section}</p>
               {group.links.map((link) => {
                 const active = pathname === link.href || pathname.startsWith(link.href + "/");
                 const badgeCount =
@@ -219,10 +272,10 @@ export function AppShell({ children }: { children: ReactNode }) {
                     key={link.href}
                     href={link.href}
                     className={
-                      "mb-0.5 flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors " +
+                      "mb-0.5 flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-all " +
                       (active
-                        ? "bg-gradient-to-r from-brand-600 to-brand-500 font-medium text-white shadow-sm"
-                        : "text-slate-600 hover:bg-slate-100")
+                        ? "bg-brand-gradient-soft font-semibold text-white shadow-brand-glow"
+                        : "text-slate-300 hover:bg-white/10 hover:text-white")
                     }
                   >
                     <span aria-hidden>{link.icon}</span>
@@ -242,22 +295,45 @@ export function AppShell({ children }: { children: ReactNode }) {
           ))}
         </nav>
 
-        <div className="border-t border-slate-100 px-5 py-3">
-          <p className="text-[11px] text-slate-400">
-            Powered by <span className="font-semibold text-slate-500">{BRAND.poweredBy}</span>
+        <div className="border-t border-white/10 px-5 py-3">
+          <p className="text-[11px] text-slate-500">
+            Powered by <span className="font-semibold text-slate-400">{BRAND.poweredBy}</span>
           </p>
         </div>
       </aside>
 
       {/* Main column */}
-      <div className="ml-60 flex min-h-screen flex-1 flex-col print:ml-0">
-        <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-slate-200 bg-white/80 px-6 backdrop-blur print:hidden">
-          <div className="hidden text-sm text-slate-500 sm:block">{BRAND.tagline}</div>
+      <div className="flex min-h-screen flex-1 flex-col lg:ml-60 print:ml-0">
+        {/* Header — matching blue-black band that frames the content */}
+        <header className="sticky top-0 z-30 flex h-16 items-center justify-between gap-3 border-b border-white/10 bg-[#0a0f1f]/95 px-4 backdrop-blur sm:px-6 print:hidden">
+          <div className="flex items-center gap-3">
+            <button
+              className="rounded-lg border border-white/15 px-2.5 py-1.5 text-slate-300 hover:bg-white/10 hover:text-white lg:hidden"
+              onClick={() => setSidebarOpen(true)}
+              aria-label="Open menu"
+            >
+              ☰
+            </button>
+            <div className="hidden text-sm text-slate-400 lg:block">{BRAND.tagline}</div>
+          </div>
           {session && (
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 sm:gap-3">
+              <button
+                onClick={() => {
+                  const next = !soundOn;
+                  setSoundEnabled(next);
+                  setSoundOn(next);
+                  if (next) playNotificationChime(); // preview the chime
+                }}
+                className="rounded-lg border border-white/15 px-2.5 py-1.5 text-sm text-slate-300 hover:bg-white/10"
+                title={soundOn ? "Notification sound on — click to mute" : "Notification sound off — click to enable"}
+                aria-label="Toggle notification sound"
+              >
+                {soundOn ? "🔔" : "🔕"}
+              </button>
               <button
                 onClick={toggleTheme}
-                className="rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
+                className="rounded-lg border border-white/15 px-2.5 py-1.5 text-sm text-slate-300 hover:bg-white/10"
                 title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
                 aria-label="Toggle dark mode"
               >
@@ -265,14 +341,14 @@ export function AppShell({ children }: { children: ReactNode }) {
               </button>
               <button
                 onClick={() => setShowAccount(true)}
-                className="flex items-center gap-2.5 rounded-lg px-2 py-1 text-left hover:bg-slate-100"
+                className="flex items-center gap-2.5 rounded-lg px-2 py-1 text-left hover:bg-white/10"
                 title="Account settings"
               >
-                <span className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-brand-500 to-brand-700 text-sm font-semibold text-white">
+                <span className="flex h-8 w-8 items-center justify-center rounded-full bg-brand-gradient text-sm font-semibold text-white shadow-brand-glow">
                   {session.user.firstName[0]}
                 </span>
-                <span>
-                  <span className="block text-sm font-medium text-slate-800">
+                <span className="hidden sm:block">
+                  <span className="block text-sm font-medium text-white">
                     {session.user.firstName} {session.user.lastName}
                   </span>
                   <span className="block text-xs text-slate-400">{session.user.role.replaceAll("_", " ")}</span>
@@ -280,14 +356,14 @@ export function AppShell({ children }: { children: ReactNode }) {
               </button>
               <button
                 onClick={logout}
-                className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
+                className="rounded-lg border border-white/15 px-3 py-1.5 text-sm text-slate-300 hover:bg-white/10"
               >
                 Sign out
               </button>
             </div>
           )}
         </header>
-        <main className="flex-1 p-6 print:p-0">{children}</main>
+        <main className="flex-1 p-4 sm:p-6 print:p-0">{children}</main>
       </div>
 
       {session && (showAccount || session.user.mustChangePassword) && (

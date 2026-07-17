@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { get, post, patch, del, getSession, ApiClientError } from "@/lib/api";
 import { formatDate, gradeLabel, localDateIso } from "@/lib/format";
-import { GRADE_LEVELS } from "@vertik12/shared";
+import { useGrades, fetchGrades, invalidateGrades, gradeName, type GradeDef } from "@/lib/grades";
 import { Badge, Button, Card, ErrorNote, Field, Input, Modal, PageHeader, Select, Spinner } from "@/components/ui";
 import { Pager } from "@/components/data-table";
 import type { FormEvent } from "react";
@@ -26,6 +26,8 @@ export default function ClassesPage() {
   const [editing, setEditing] = useState<ClassRow | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [showYears, setShowYears] = useState(false);
+  const [showGrades, setShowGrades] = useState(false);
+  const grades = useGrades();
   // Client-side paging + grade filter keep the card grid usable when the
   // school has dozens of sections.
   const [page, setPage] = useState(1);
@@ -61,6 +63,7 @@ export default function ClassesPage() {
         actions={
           canAssign ? (
             <>
+              <Button variant="secondary" onClick={() => setShowGrades(true)}>Grade levels</Button>
               <Button variant="secondary" onClick={() => setShowYears(true)}>Academic years</Button>
               <Button onClick={() => setShowCreate(true)}>+ Add class</Button>
             </>
@@ -70,7 +73,7 @@ export default function ClassesPage() {
       <div className="mb-4 max-w-[200px]">
         <Select value={gradeFilter} onChange={(e) => { setGradeFilter(e.target.value); setPage(1); }}>
           <option value="">All grades</option>
-          {GRADE_LEVELS.map((g) => <option key={g} value={g}>{gradeLabel(g)}</option>)}
+          {grades.map((g) => <option key={g.code} value={g.code}>{g.name}</option>)}
         </Select>
       </div>
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -155,7 +158,133 @@ export default function ClassesPage() {
           }}
         />
       )}
+      {showGrades && <ManageGradesModal onClose={() => setShowGrades(false)} />}
     </div>
+  );
+}
+
+// ============ admin: the school's grade ladder (varies by country) ============
+
+/**
+ * Grades must exist before classes can be created for them — naming differs
+ * per country (KG1, Year 7, Form 2…), so the admin shapes the ladder here.
+ */
+function ManageGradesModal({ onClose }: { onClose: () => void }) {
+  const [grades, setGrades] = useState<GradeDef[] | null>(null);
+  const [form, setForm] = useState({ code: "", name: "" });
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(() => {
+    invalidateGrades(); // bypass the session cache — this modal edits the source
+    return fetchGrades().then(setGrades);
+  }, []);
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function add(e: FormEvent) {
+    e.preventDefault();
+    setSaving(true);
+    setError(null);
+    try {
+      await post("/academics/grades", {
+        code: form.code.trim(),
+        name: form.name.trim(),
+        sortOrder: (grades?.length ?? 0) === 0 ? 0 : Math.max(...grades!.map((g) => g.sortOrder)) + 1,
+      });
+      setForm({ code: "", name: "" });
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiClientError ? err.message : "Failed to add grade");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function rename(g: GradeDef) {
+    const name = window.prompt(`Display name for "${g.code}":`, g.name);
+    if (name === null || !name.trim()) return;
+    setError(null);
+    try {
+      await patch(`/academics/grades/${g.id}`, { name: name.trim() });
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiClientError ? err.message : "Failed to rename grade");
+    }
+  }
+
+  async function move(g: GradeDef, dir: -1 | 1) {
+    if (!grades) return;
+    const idx = grades.findIndex((x) => x.id === g.id);
+    const other = grades[idx + dir];
+    if (!other) return;
+    setError(null);
+    try {
+      // Swap sort positions with the neighbour.
+      await Promise.all([
+        patch(`/academics/grades/${g.id}`, { sortOrder: other.sortOrder }),
+        patch(`/academics/grades/${other.id}`, { sortOrder: g.sortOrder }),
+      ]);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiClientError ? err.message : "Failed to reorder");
+    }
+  }
+
+  async function remove(g: GradeDef) {
+    if (!window.confirm(`Remove grade "${g.name}"? This only works while nothing uses it.`)) return;
+    setError(null);
+    try {
+      await del(`/academics/grades/${g.id}`);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiClientError ? err.message : "Failed to remove grade");
+    }
+  }
+
+  return (
+    <Modal open title="Grade levels — the school's ladder" onClose={onClose} wide>
+      <div className="space-y-5">
+        <p className="text-sm text-slate-500">
+          Grade naming varies by country, so the school defines its own ladder (KG1, Year 7, Form 2, A-Level…).
+          Classes, admissions, subjects and fee presets all pick from this list.
+        </p>
+        {!grades ? (
+          <div className="flex justify-center py-10 text-brand-600"><Spinner /></div>
+        ) : (
+          <ul className="max-h-[45vh] divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-200">
+            {grades.map((g, i) => (
+              <li key={g.id} className="flex items-center gap-3 px-4 py-2 text-sm">
+                <span className="w-16 shrink-0 font-mono text-xs text-slate-400">{g.code}</span>
+                <span className="flex-1 font-medium text-slate-800">{g.name}</span>
+                <button className="px-1 text-slate-400 hover:text-slate-700 disabled:opacity-30" disabled={i === 0} onClick={() => void move(g, -1)} title="Move up">↑</button>
+                <button className="px-1 text-slate-400 hover:text-slate-700 disabled:opacity-30" disabled={i === grades.length - 1} onClick={() => void move(g, 1)} title="Move down">↓</button>
+                <button className="text-xs font-medium text-brand-600 hover:underline" onClick={() => void rename(g)}>Rename</button>
+                <button className="text-xs font-medium text-rose-600 hover:underline" onClick={() => void remove(g)}>Remove</button>
+              </li>
+            ))}
+            {grades.length === 0 && <li className="px-4 py-6 text-center text-sm text-slate-400">No grades yet — add the first one below.</li>}
+          </ul>
+        )}
+
+        <form onSubmit={add} className="space-y-3 rounded-lg bg-slate-50 p-4">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Add a grade</p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Code" hint="Short key stored on records — can't be changed later">
+              <Input value={form.code} onChange={(e) => setForm((f) => ({ ...f, code: e.target.value }))} placeholder="e.g. KG1, Y7, F2" required maxLength={20} />
+            </Field>
+            <Field label="Display name">
+              <Input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="e.g. Kindergarten 1, Year 7" required maxLength={60} />
+            </Field>
+          </div>
+          <ErrorNote message={error} />
+          <div className="flex justify-end">
+            <Button type="submit" loading={saving}>Add grade</Button>
+          </div>
+        </form>
+      </div>
+    </Modal>
   );
 }
 
@@ -168,9 +297,17 @@ function CreateClassModal({ onClose, onCreated, onSetUpYears }: {
 }) {
   // null = still loading — distinct from "loaded and none exist".
   const [years, setYears] = useState<Array<{ id: string; name: string; isActive: boolean }> | null>(null);
-  const [form, setForm] = useState({ gradeLevel: "K", section: "A", branch: "", capacity: "30", academicYearId: "" });
+  const grades = useGrades();
+  const [form, setForm] = useState({ gradeLevel: "", section: "A", branch: "", capacity: "30", academicYearId: "" });
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+
+  // Grades are admin-configured; default to the ladder's first entry.
+  useEffect(() => {
+    if (grades.length > 0 && !grades.some((g) => g.code === form.gradeLevel)) {
+      setForm((f) => ({ ...f, gradeLevel: grades[0]!.code }));
+    }
+  }, [grades]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     get<Array<{ id: string; name: string; isActive: boolean }>>("/academics/years")
@@ -186,7 +323,7 @@ function CreateClassModal({ onClose, onCreated, onSetUpYears }: {
   }, []);
 
   // Display name derived from grade + section + branch, e.g. "KG — B (West Campus)".
-  const name = `${form.gradeLevel === "K" ? "Kindergarten" : `Grade ${form.gradeLevel}`} — ${form.section}${form.branch ? ` (${form.branch})` : ""}`;
+  const name = `${gradeName(grades, form.gradeLevel)} — ${form.section}${form.branch ? ` (${form.branch})` : ""}`;
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -214,7 +351,7 @@ function CreateClassModal({ onClose, onCreated, onSetUpYears }: {
         <div className="grid grid-cols-2 gap-4">
           <Field label="Grade">
             <Select value={form.gradeLevel} onChange={(e) => setForm((f) => ({ ...f, gradeLevel: e.target.value }))}>
-              {GRADE_LEVELS.map((g) => <option key={g} value={g}>{gradeLabel(g)}</option>)}
+              {grades.map((g) => <option key={g.code} value={g.code}>{g.name}</option>)}
             </Select>
           </Field>
           <Field label="Section" hint="A, B, C… — as many per grade as needed">

@@ -11,16 +11,34 @@ async function nextStaffNo(): Promise<string> {
   return `VRT-EMP-${String(count + 1).padStart(4, "0")}`;
 }
 
-export async function listStaff(q: PaginationQuery & { staffType?: string; status?: string }) {
+export async function listStaff(
+  q: PaginationQuery & { staffType?: string; status?: string; role?: string; department?: string },
+) {
+  // HR search covers the whole employee record: staff number, name, email,
+  // designation and department; the dropdown filters narrow by type,
+  // employment status, portal role and department.
   const where: Prisma.StaffWhereInput = {
     ...(q.staffType ? { staffType: q.staffType } : {}),
     ...(q.status ? { status: q.status } : {}),
+    ...(q.role ? { user: { is: { role: q.role } } } : {}),
+    ...(q.department ? { department: { contains: q.department } } : {}),
     ...(q.search
       ? {
           OR: [
             { staffNo: { contains: q.search } },
             { designation: { contains: q.search } },
-            { user: { is: { OR: [{ firstName: { contains: q.search } }, { lastName: { contains: q.search } }] } } },
+            { department: { contains: q.search } },
+            {
+              user: {
+                is: {
+                  OR: [
+                    { firstName: { contains: q.search } },
+                    { lastName: { contains: q.search } },
+                    { email: { contains: q.search } },
+                  ],
+                },
+              },
+            },
           ],
         }
       : {}),
@@ -102,6 +120,33 @@ export async function deactivateStaff(id: string, status: "TERMINATED" | "RESIGN
   const staff = await prisma.staff.update({ where: { id }, data: { status } });
   await prisma.user.update({ where: { id: staff.userId }, data: { isActive: false } });
   return staff;
+}
+
+/**
+ * HR status management: ACTIVE / ON_LEAVE / TERMINATED / RESIGNED.
+ * Login access follows the employment status automatically:
+ *  - TERMINATED / RESIGNED → portal access revoked, open sessions killed.
+ *  - ACTIVE (re-hire / return) → portal access restored.
+ *  - ON_LEAVE → access left as-is (still employed).
+ * Terminating a registrar (which cuts their login) stays Super-Admin-only,
+ * mirroring the web-access rule.
+ */
+export async function setStaffStatus(id: string, status: string, actorRole: string) {
+  const staff = await prisma.staff.findUnique({ where: { id }, include: { user: true } });
+  if (!staff) throw ApiError.notFound("Staff member");
+  const cutsAccess = status === "TERMINATED" || status === "RESIGNED";
+  if (cutsAccess && actorRole !== "SUPER_ADMIN" && ["REGISTRAR", "SUPER_ADMIN"].includes(staff.user.role)) {
+    throw ApiError.forbidden("Only the Super Admin can terminate the registrar (it revokes their web access)");
+  }
+
+  await prisma.staff.update({ where: { id }, data: { status } });
+  if (cutsAccess) {
+    await prisma.user.update({ where: { id: staff.userId }, data: { isActive: false } });
+    await prisma.refreshToken.updateMany({ where: { userId: staff.userId, revokedAt: null }, data: { revokedAt: new Date() } });
+  } else if (status === "ACTIVE" && !staff.user.isActive) {
+    await prisma.user.update({ where: { id: staff.userId }, data: { isActive: true } });
+  }
+  return getStaff(id);
 }
 
 /**

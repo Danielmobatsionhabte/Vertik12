@@ -15,9 +15,9 @@ export function cx(...classes: Array<string | false | null | undefined>): string
 type ButtonVariant = "primary" | "secondary" | "danger" | "ghost";
 
 const buttonVariants: Record<ButtonVariant, string> = {
-  primary: "bg-brand-600 text-white shadow-sm hover:bg-brand-700 focus-visible:ring-brand-500",
+  primary: "bg-brand-gradient-soft text-white shadow-brand-glow hover:brightness-110 focus-visible:ring-brand-500",
   secondary: "bg-white text-slate-700 border border-slate-300 hover:bg-slate-50 focus-visible:ring-slate-400",
-  danger: "bg-rose-600 text-white shadow-sm hover:bg-rose-700 focus-visible:ring-rose-500",
+  danger: "bg-gradient-to-br from-rose-500 to-red-600 text-white shadow-sm hover:brightness-110 focus-visible:ring-rose-500",
   ghost: "text-slate-600 hover:bg-slate-100 focus-visible:ring-slate-400",
 };
 
@@ -94,14 +94,18 @@ export function Field({ label, children, hint }: { label: string; children: Reac
 
 // ---------- surfaces ----------
 export function Card({ className, children }: { className?: string; children: ReactNode }) {
-  return <div className={cx("rounded-xl border border-slate-200 bg-white shadow-sm", className)}>{children}</div>;
+  return (
+    <div className={cx("rounded-2xl border border-slate-200/80 bg-white shadow-sm transition-shadow", className)}>
+      {children}
+    </div>
+  );
 }
 
 export function PageHeader({ title, subtitle, actions }: { title: string; subtitle?: string; actions?: ReactNode }) {
   return (
     <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
       <div>
-        <h1 className="text-2xl font-semibold text-slate-900">{title}</h1>
+        <h1 className="text-2xl font-bold tracking-tight text-gradient">{title}</h1>
         {subtitle && <p className="mt-1 text-sm text-slate-500">{subtitle}</p>}
       </div>
       {actions && <div className="flex items-center gap-2">{actions}</div>}
@@ -139,9 +143,11 @@ export function Badge({ children, tone }: { children: ReactNode; tone?: keyof ty
 // ---------- stat tile ----------
 export function StatCard({ label, value, detail }: { label: string; value: ReactNode; detail?: string }) {
   return (
-    <Card className="p-5">
+    <Card className="relative overflow-hidden p-5 hover:shadow-brand-glow">
+      {/* subtle gradient glow in the corner — the brand's signature accent */}
+      <div aria-hidden className="pointer-events-none absolute -right-8 -top-8 h-24 w-24 rounded-full bg-brand-gradient opacity-[0.12] blur-2xl" />
       <p className="text-sm text-slate-500">{label}</p>
-      <p className="mt-1 text-2xl font-semibold tabular-nums text-slate-900">{value}</p>
+      <p className="mt-1 text-2xl font-bold tabular-nums text-slate-900">{value}</p>
       {detail && <p className="mt-1 text-xs text-slate-400">{detail}</p>}
     </Card>
   );
@@ -184,11 +190,14 @@ export function Modal({ open, title, onClose, children, wide, dismissable = true
       onClick={dismissable ? onClose : undefined}
     >
       <div
-        className={cx("mt-8 w-full rounded-xl bg-white p-6 shadow-xl", wide ? "max-w-3xl" : "max-w-lg")}
+        className={cx("mt-8 w-full overflow-hidden rounded-2xl bg-white shadow-xl ring-1 ring-slate-900/5", wide ? "max-w-3xl" : "max-w-lg")}
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
       >
+        {/* gradient accent rail across the top of every dialog */}
+        <div aria-hidden className="h-1 w-full bg-brand-gradient" />
+        <div className="p-6">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-lg font-semibold text-slate-900">{title}</h2>
           {dismissable && (
@@ -198,6 +207,7 @@ export function Modal({ open, title, onClose, children, wide, dismissable = true
           )}
         </div>
         {children}
+        </div>
       </div>
     </div>
   );

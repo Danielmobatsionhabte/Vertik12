@@ -1,6 +1,6 @@
 # Vertik12
 
-**The global K-12 Student Information Management System** — built for private schools that need academics, billing and HR in one place.
+**The global Student Information Management System** — built for schools of every kind that need academics, billing and HR in one place.
 
 *Powered by **CloudPunkt***
 

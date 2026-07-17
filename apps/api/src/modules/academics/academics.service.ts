@@ -1,5 +1,69 @@
+import { GRADE_LEVELS } from "@vertik12/shared";
 import { prisma } from "../../lib/prisma";
 import { ApiError } from "../../lib/errors";
+
+// ---------- grade levels (admin-configured ladder) ----------
+
+/**
+ * Grade naming varies by country (KG1, Year 7, Form 2…), so the school
+ * defines its own ladder. An empty table is auto-seeded with the classic
+ * K-12 defaults so existing installations keep working untouched.
+ */
+export async function listGrades() {
+  const count = await prisma.gradeLevelDef.count();
+  if (count === 0) {
+    await prisma.gradeLevelDef.createMany({
+      data: GRADE_LEVELS.map((code, i) => ({
+        code,
+        name: code === "K" ? "Kindergarten" : `Grade ${code}`,
+        sortOrder: i,
+      })),
+    });
+  }
+  return prisma.gradeLevelDef.findMany({ orderBy: [{ sortOrder: "asc" }, { code: "asc" }] });
+}
+
+export async function createGrade(input: { code: string; name: string; sortOrder: number }) {
+  const existing = await prisma.gradeLevelDef.findUnique({ where: { code: input.code } });
+  if (existing) throw ApiError.conflict(`A grade with code "${input.code}" already exists`);
+  return prisma.gradeLevelDef.create({ data: input });
+}
+
+export async function updateGrade(id: string, input: { name?: string; sortOrder?: number }) {
+  // The code itself is immutable — student/class rows reference it by value.
+  const grade = await prisma.gradeLevelDef.findUnique({ where: { id } });
+  if (!grade) throw ApiError.notFound("Grade level");
+  return prisma.gradeLevelDef.update({ where: { id }, data: input });
+}
+
+/** Remove a grade — only while nothing references its code. */
+export async function deleteGrade(id: string) {
+  const grade = await prisma.gradeLevelDef.findUnique({ where: { id } });
+  if (!grade) throw ApiError.notFound("Grade level");
+  const [students, classes, subjects, fees] = await Promise.all([
+    prisma.student.count({ where: { gradeLevel: grade.code } }),
+    prisma.classRoom.count({ where: { gradeLevel: grade.code } }),
+    prisma.subject.count({ where: { gradeLevel: grade.code } }),
+    prisma.feeStructure.count({ where: { gradeLevel: grade.code } }),
+  ]);
+  const used = students + classes + subjects + fees;
+  if (used > 0) {
+    throw ApiError.badRequest(
+      `"${grade.name}" is still used by ${students} student(s), ${classes} class(es), ${subjects} subject(s) and ${fees} fee preset(s) — reassign them first`,
+    );
+  }
+  return prisma.gradeLevelDef.delete({ where: { id } });
+}
+
+/** Services call this before storing a grade code (admission, class create…). */
+export async function assertGradeExists(code: string) {
+  await listGrades(); // seeds defaults on first touch
+  const grade = await prisma.gradeLevelDef.findUnique({ where: { code } });
+  if (!grade) {
+    throw ApiError.badRequest(`Grade "${code}" is not configured — an administrator must add it under Classes › Grade levels first`);
+  }
+  return grade;
+}
 
 // ---------- academic years & terms ----------
 
@@ -56,10 +120,13 @@ export async function getClassRoom(id: string) {
   return classRoom;
 }
 
-export const createClassRoom = (input: {
+export const createClassRoom = async (input: {
   name: string; gradeLevel: string; section: string; branch?: string; capacity: number;
   academicYearId: string; homeroomTeacherId?: string;
-}) => prisma.classRoom.create({ data: { ...input, branch: input.branch || null } });
+}) => {
+  await assertGradeExists(input.gradeLevel); // grades are set up by the admin first
+  return prisma.classRoom.create({ data: { ...input, branch: input.branch || null } });
+};
 
 /**
  * Class updates split by responsibility:

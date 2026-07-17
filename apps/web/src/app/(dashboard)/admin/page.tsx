@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import type { Paginated } from "@vertik12/shared";
-import { GRADE_LEVELS, ROLES } from "@vertik12/shared";
+import { ROLES } from "@vertik12/shared";
+import { useGrades } from "@/lib/grades";
 import { get, post, patch, put, ApiClientError } from "@/lib/api";
 import { formatDate, humanize } from "@/lib/format";
 import { Badge, Button, Card, ErrorNote, Field, Input, Modal, PageHeader, Select, cx } from "@/components/ui";
@@ -62,6 +63,7 @@ interface SubjectRow {
 }
 
 function SubjectsTab() {
+  const grades = useGrades();
   const [subjects, setSubjects] = useState<SubjectRow[] | null>(null);
   const [form, setForm] = useState({ code: "", name: "", gradeLevel: "", description: "" });
   const [error, setError] = useState<string | null>(null);
@@ -127,7 +129,7 @@ function SubjectsTab() {
           <Field label="Grade level" hint="Grade-specific subjects can only be assigned to classes of that grade">
             <Select value={form.gradeLevel} onChange={(e) => setForm((f) => ({ ...f, gradeLevel: e.target.value }))}>
               <option value="">All grades</option>
-              {GRADE_LEVELS.map((g) => <option key={g} value={g}>{g === "K" ? "Kindergarten" : `Grade ${g}`}</option>)}
+              {grades.map((g) => <option key={g.code} value={g.code}>{g.name}</option>)}
             </Select>
           </Field>
           <Field label="Description (optional)">

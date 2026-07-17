@@ -3,11 +3,15 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { GRADE_LEVELS, STUDENT_STATUSES } from "@vertik12/shared";
-import { get, post, patch, getSession, ApiClientError } from "@/lib/api";
+import { STUDENT_STATUSES, COUNTRIES, ATTACHMENT_ACCEPT } from "@vertik12/shared";
+import { useGrades } from "@/lib/grades";
+import { get, post, put, patch, del, getSession, ApiClientError } from "@/lib/api";
+import { fileToPhoto, fileToAttachment, downloadAttachment } from "@/lib/files";
 import { formatDate, formatMoney, fullName, gradeLabel, humanize } from "@/lib/format";
 import { Badge, Button, Card, ErrorNote, Field, Input, Modal, PageHeader, Select, Spinner, StatCard } from "@/components/ui";
 import { DataTable } from "@/components/data-table";
+import { StudentPhoto } from "@/components/student-photo";
+import { WebcamCaptureModal } from "@/components/webcam-capture";
 
 interface StudentProfile {
   id: string;
@@ -18,9 +22,14 @@ interface StudentProfile {
   gender: string;
   gradeLevel: string;
   status: string;
+  addressLine2?: string | null;
   city?: string | null;
+  state?: string | null;
+  postalCode?: string | null;
   country?: string | null;
   nationality?: string | null;
+  placeOfBirth?: string | null;
+  photoRef?: string | null;
   attendanceRate: number | null;
   // null when the viewer's role may not see this data (teacher ⇒ no finance,
   // accountant ⇒ no results) — the API strips it server-side.
@@ -45,8 +54,96 @@ export default function StudentProfilePage() {
     { mode: "add" } | { mode: "edit"; link: StudentProfile["guardians"][number] } | null
   >(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [photoBusy, setPhotoBusy] = useState(false);
+  const [photoVersion, setPhotoVersion] = useState(0);
+  const [webcamFor, setWebcamFor] = useState<"photo" | "doc" | null>(null);
+  const [docs, setDocs] = useState<Array<{ id: string; label: string; fileName: string; fileType: string; createdAt: string }> | null>(null);
+  const [docLabel, setDocLabel] = useState("Guardian ID");
 
   const canManage = ["SUPER_ADMIN", "ADMIN", "REGISTRAR"].includes(getSession()?.user.role ?? "");
+
+  const loadDocs = useCallback(
+    () => get<Array<{ id: string; label: string; fileName: string; fileType: string; createdAt: string }>>(`/students/${id}/documents`)
+      .then(setDocs)
+      .catch(() => setDocs([])),
+    [id],
+  );
+  useEffect(() => {
+    void loadDocs();
+  }, [loadDocs]);
+
+  /** Save an already-encoded photo (from a file pick or a webcam capture). */
+  async function savePhoto(photo: { name: string; type: string; dataBase64: string }) {
+    setPhotoBusy(true);
+    setNotice(null);
+    try {
+      await put(`/students/${id}/photo`, photo);
+      setPhotoVersion((v) => v + 1);
+      setNotice("Student photo updated.");
+      await load();
+    } catch (err) {
+      setNotice(err instanceof ApiClientError ? err.message : "Failed to upload the photo");
+    } finally {
+      setPhotoBusy(false);
+    }
+  }
+
+  /** Upload or replace the student picture (also handles phone-camera captures). */
+  async function pickPhoto(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setNotice(null);
+    try {
+      await savePhoto(await fileToPhoto(file));
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "Failed to upload the photo");
+    } finally {
+      e.target.value = "";
+    }
+  }
+
+  /** Add a document (guardian ID, certificate…) from a picked file. */
+  async function pickDocFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setNotice(null);
+    try {
+      const attachment = await fileToAttachment(file);
+      await post(`/students/${id}/documents`, { label: docLabel.trim() || "Document", attachment });
+      setDocLabel("Guardian ID");
+      setNotice("Document saved to the student's file.");
+      await loadDocs();
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "Failed to save the document");
+    } finally {
+      e.target.value = "";
+    }
+  }
+
+  async function removeDoc(doc: { id: string; label: string }) {
+    if (!window.confirm(`Remove "${doc.label}" from the student's file?`)) return;
+    try {
+      await del(`/students/${id}/documents/${doc.id}`);
+      await loadDocs();
+    } catch (err) {
+      setNotice(err instanceof ApiClientError ? err.message : "Failed to remove the document");
+    }
+  }
+
+  async function removePhoto() {
+    if (!window.confirm("Remove this student's photo?")) return;
+    setPhotoBusy(true);
+    try {
+      await del(`/students/${id}/photo`);
+      setPhotoVersion((v) => v + 1);
+      setNotice("Student photo removed.");
+      await load();
+    } catch (err) {
+      setNotice(err instanceof ApiClientError ? err.message : "Failed to remove the photo");
+    } finally {
+      setPhotoBusy(false);
+    }
+  }
 
   const load = useCallback(
     () => get<StudentProfile>(`/students/${id}`).then(setStudent).catch((e) => setError(e.message)),
@@ -139,12 +236,102 @@ export default function StudentProfilePage() {
         <div className="space-y-6">
           <Card className="p-6">
             <h2 className="mb-4 text-sm font-semibold text-slate-700">Personal</h2>
+
+            {/* Photo — optional; the registrar/admin can upload, capture or replace it any time. */}
+            <div className="mb-4 flex items-center gap-4">
+              <StudentPhoto
+                studentId={student.id}
+                hasPhoto={!!student.photoRef}
+                name={student}
+                version={photoVersion}
+                className="h-20 w-20 rounded-xl text-xl"
+              />
+              {canManage && (
+                <div className="space-y-1.5 text-xs">
+                  <label className="block cursor-pointer font-medium text-brand-600 hover:underline">
+                    {photoBusy ? "Uploading…" : student.photoRef ? "📷 Change photo" : "📷 Add photo"}
+                    <input
+                      type="file"
+                      accept="image/jpeg,image/png"
+                      capture="user"
+                      className="hidden"
+                      disabled={photoBusy}
+                      onChange={(e) => void pickPhoto(e)}
+                    />
+                  </label>
+                  <button className="block font-medium text-brand-600 hover:underline" disabled={photoBusy} onClick={() => setWebcamFor("photo")}>
+                    📸 Shoot with webcam
+                  </button>
+                  {student.photoRef && (
+                    <button className="block font-medium text-rose-600 hover:underline" disabled={photoBusy} onClick={() => void removePhoto()}>
+                      Remove photo
+                    </button>
+                  )}
+                  <p className="text-slate-400">JPG/PNG, max 2 MB — phones open the camera</p>
+                </div>
+              )}
+            </div>
+
             <dl className="space-y-2 text-sm">
               <div className="flex justify-between"><dt className="text-slate-500">Date of birth</dt><dd>{formatDate(student.dateOfBirth)}</dd></div>
               <div className="flex justify-between"><dt className="text-slate-500">Gender</dt><dd className="capitalize">{student.gender.toLowerCase()}</dd></div>
-              <div className="flex justify-between"><dt className="text-slate-500">Nationality</dt><dd>{student.nationality ?? "—"}</dd></div>
-              <div className="flex justify-between"><dt className="text-slate-500">Location</dt><dd>{[student.city, student.country].filter(Boolean).join(", ") || "—"}</dd></div>
+              <div className="flex justify-between"><dt className="text-slate-500">Citizenship</dt><dd>{student.nationality ?? "—"}</dd></div>
+              <div className="flex justify-between"><dt className="text-slate-500">Place of birth</dt><dd>{student.placeOfBirth ?? "—"}</dd></div>
+              <div className="flex justify-between gap-4">
+                <dt className="shrink-0 text-slate-500">Address</dt>
+                <dd className="text-right">
+                  {[
+                    [student.addressLine1, student.addressLine2].filter(Boolean).join(", "),
+                    [student.city, student.state, student.postalCode].filter(Boolean).join(", "),
+                    student.country,
+                  ].filter(Boolean).join(" · ") || "—"}
+                </dd>
+              </div>
             </dl>
+          </Card>
+
+          {/* Documents on file — guardian ID, certificates… (staff view; registrar/admin manage) */}
+          <Card className="p-6">
+            <h2 className="mb-3 text-sm font-semibold text-slate-700">Documents on file</h2>
+            {!docs ? (
+              <div className="flex justify-center py-6 text-brand-600"><Spinner /></div>
+            ) : docs.length === 0 ? (
+              <p className="py-2 text-sm text-slate-400">No documents yet.</p>
+            ) : (
+              <ul className="divide-y divide-slate-100">
+                {docs.map((d) => (
+                  <li key={d.id} className="flex items-center gap-2 py-2 text-sm">
+                    <span aria-hidden>📄</span>
+                    <button
+                      className="min-w-0 flex-1 truncate text-left font-medium text-brand-600 hover:underline"
+                      title={`${d.fileName} · ${formatDate(d.createdAt)}`}
+                      onClick={() => downloadAttachment(`/students/${id}/documents/${d.id}`, d.fileName).catch((e) => setNotice(e.message))}
+                    >
+                      {d.label}
+                    </button>
+                    {canManage && (
+                      <button className="text-xs font-medium text-rose-600 hover:underline" onClick={() => void removeDoc(d)}>
+                        Remove
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {canManage && (
+              <div className="mt-3 space-y-2 border-t border-slate-100 pt-3">
+                <Input value={docLabel} onChange={(e) => setDocLabel(e.target.value)} maxLength={100} placeholder="Document label, e.g. Guardian ID — Father" />
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <label className="cursor-pointer font-medium text-brand-600 hover:underline">
+                    📎 Upload file
+                    <input type="file" accept={ATTACHMENT_ACCEPT} className="hidden" onChange={(e) => void pickDocFile(e)} />
+                  </label>
+                  <button className="font-medium text-brand-600 hover:underline" onClick={() => setWebcamFor("doc")}>
+                    📸 Photograph with webcam
+                  </button>
+                </div>
+              </div>
+            )}
           </Card>
 
           <Card className="p-6">
@@ -236,6 +423,25 @@ export default function StudentProfilePage() {
           }}
         />
       )}
+      {webcamFor && (
+        <WebcamCaptureModal
+          title={webcamFor === "photo" ? "Take the student's photo" : `Photograph: ${docLabel.trim() || "Document"}`}
+          onClose={() => setWebcamFor(null)}
+          onCapture={(image) => {
+            if (webcamFor === "photo") {
+              void savePhoto(image);
+            } else {
+              void post(`/students/${id}/documents`, { label: docLabel.trim() || "Document", attachment: image })
+                .then(async () => {
+                  setDocLabel("Guardian ID");
+                  setNotice("Document saved to the student's file.");
+                  await loadDocs();
+                })
+                .catch((err) => setNotice(err instanceof ApiClientError ? err.message : "Failed to save the document"));
+            }
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -246,6 +452,7 @@ function EditStudentModal({ student, onClose, onSaved }: {
   onClose: () => void;
   onSaved: () => Promise<void>;
 }) {
+  const grades = useGrades();
   const [form, setForm] = useState({
     firstName: student.firstName,
     lastName: student.lastName,
@@ -254,9 +461,13 @@ function EditStudentModal({ student, onClose, onSaved }: {
     phone: student.phone ?? "",
     email: student.email ?? "",
     addressLine1: student.addressLine1 ?? "",
+    addressLine2: student.addressLine2 ?? "",
     city: student.city ?? "",
+    state: student.state ?? "",
+    postalCode: student.postalCode ?? "",
     country: student.country ?? "",
     nationality: student.nationality ?? "",
+    placeOfBirth: student.placeOfBirth ?? "",
     medicalNotes: student.medicalNotes ?? "",
   });
   const [error, setError] = useState<string | null>(null);
@@ -274,9 +485,13 @@ function EditStudentModal({ student, onClose, onSaved }: {
         phone: form.phone || undefined,
         email: form.email || undefined,
         addressLine1: form.addressLine1 || undefined,
+        addressLine2: form.addressLine2 || undefined,
         city: form.city || undefined,
+        state: form.state || undefined,
+        postalCode: form.postalCode || undefined,
         country: form.country || undefined,
         nationality: form.nationality || undefined,
+        placeOfBirth: form.placeOfBirth || undefined,
         medicalNotes: form.medicalNotes || undefined,
       });
       await onSaved();
@@ -294,7 +509,7 @@ function EditStudentModal({ student, onClose, onSaved }: {
           <Field label="Last name"><Input value={form.lastName} onChange={set("lastName")} required /></Field>
           <Field label="Grade level">
             <Select value={form.gradeLevel} onChange={set("gradeLevel")}>
-              {GRADE_LEVELS.map((g) => <option key={g} value={g}>{gradeLabel(g)}</option>)}
+              {grades.map((g) => <option key={g.code} value={g.code}>{g.name}</option>)}
             </Select>
           </Field>
           <Field label="Status">
@@ -304,10 +519,29 @@ function EditStudentModal({ student, onClose, onSaved }: {
           </Field>
           <Field label="Phone"><Input value={form.phone} onChange={set("phone")} /></Field>
           <Field label="Email"><Input type="email" value={form.email} onChange={set("email")} /></Field>
-          <Field label="Address"><Input value={form.addressLine1} onChange={set("addressLine1")} /></Field>
+          <Field label="Street address"><Input value={form.addressLine1} onChange={set("addressLine1")} /></Field>
+          <Field label="Unit / Apt / Suite"><Input value={form.addressLine2} onChange={set("addressLine2")} /></Field>
           <Field label="City"><Input value={form.city} onChange={set("city")} /></Field>
-          <Field label="Country"><Input value={form.country} onChange={set("country")} /></Field>
-          <Field label="Nationality"><Input value={form.nationality} onChange={set("nationality")} /></Field>
+          <Field label="State / Province"><Input value={form.state} onChange={set("state")} /></Field>
+          <Field label="ZIP / Postal code"><Input value={form.postalCode} onChange={set("postalCode")} maxLength={20} /></Field>
+          <Field label="Country">
+            <Select value={form.country} onChange={set("country")}>
+              <option value="">— Select —</option>
+              {COUNTRIES.map((c) => <option key={c} value={c}>{c}</option>)}
+            </Select>
+          </Field>
+          <Field label="Country of citizenship">
+            <Select value={form.nationality} onChange={set("nationality")}>
+              <option value="">— Select —</option>
+              {COUNTRIES.map((c) => <option key={c} value={c}>{c}</option>)}
+            </Select>
+          </Field>
+          <Field label="Place of birth">
+            <Select value={form.placeOfBirth} onChange={set("placeOfBirth")}>
+              <option value="">— Select —</option>
+              {COUNTRIES.map((c) => <option key={c} value={c}>{c}</option>)}
+            </Select>
+          </Field>
         </div>
         <Field label="Medical notes">
           <textarea
