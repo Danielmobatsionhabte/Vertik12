@@ -44,7 +44,8 @@ export const ROLE_MODULES: Record<Role, ModuleKey[]> = {
   SUPER_ADMIN: ["dashboard", "students", "staff", "classes", "attendance", "exams", "assignments", "lessons", "finance", "payroll", "announcements", "messages", "admin"],
   ADMIN: ["dashboard", "students", "staff", "classes", "attendance", "exams", "assignments", "lessons", "finance", "payroll", "announcements", "messages"],
   // Registrar processes student fee payments (finance), but not payroll/HR.
-  REGISTRAR: ["dashboard", "students", "classes", "attendance", "exams", "finance", "announcements", "messages"],
+  // Lessons is read-only for them (published plans + the calendar view).
+  REGISTRAR: ["dashboard", "students", "classes", "attendance", "exams", "lessons", "finance", "announcements", "messages"],
   // Teachers: academics only — no finance, payroll, HR or student admission.
   TEACHER: ["dashboard", "students", "classes", "attendance", "exams", "assignments", "lessons", "announcements", "messages"],
   ACCOUNTANT: ["dashboard", "students", "staff", "finance", "payroll", "announcements", "messages"],

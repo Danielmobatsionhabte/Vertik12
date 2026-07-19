@@ -4,10 +4,11 @@ import Link from "next/link";
 import { notFound, usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { BRAND, ROLE_MODULES, type ModuleKey, type Role } from "@vertik12/shared";
-import { get, getSession, setSession, post, type Session, ApiClientError, SESSION_STORAGE_KEY } from "@/lib/api";
+import { get, getSession, setSession, post, touchActivity, idleMs, IDLE_TIMEOUT_MS, type Session, ApiClientError, SESSION_STORAGE_KEY } from "@/lib/api";
 import { applyTheme, getTheme, initTheme, type Theme } from "@/lib/theme";
 import { isSoundEnabled, setSoundEnabled, playNotificationChime } from "@/lib/sound";
 import { Button, ErrorNote, Field, Input, Modal } from "@/components/ui";
+import { Icon, type IconName } from "@/components/icons";
 
 /**
  * Authenticated dashboard chrome: sidebar navigation + top bar.
@@ -18,47 +19,47 @@ import { Button, ErrorNote, Field, Input, Modal } from "@/components/ui";
  * (The API enforces the same matrix server-side — this is just UX.)
  */
 
-interface NavLink { href: string; label: string; icon: string; module: ModuleKey }
+interface NavLink { href: string; label: string; icon: IconName; module: ModuleKey }
 
 const NAV: Array<{ section: string; links: NavLink[] }> = [
   {
     section: "Overview",
     links: [
-      { href: "/dashboard", label: "Dashboard", icon: "◧", module: "dashboard" },
-      { href: "/portal", label: "My Children", icon: "🏠", module: "portal" },
+      { href: "/dashboard", label: "Dashboard", icon: "grid", module: "dashboard" },
+      { href: "/portal", label: "My Children", icon: "home", module: "portal" },
     ],
   },
   {
     section: "People",
     links: [
-      { href: "/students", label: "Students", icon: "🎓", module: "students" },
-      { href: "/staff", label: "Staff & HR", icon: "🧑‍🏫", module: "staff" },
+      { href: "/students", label: "Students", icon: "graduation-cap", module: "students" },
+      { href: "/staff", label: "Staff & HR", icon: "users", module: "staff" },
     ],
   },
   {
     section: "Academics",
     links: [
-      { href: "/classes", label: "Classes", icon: "🏫", module: "classes" },
-      { href: "/attendance", label: "Attendance", icon: "🗓", module: "attendance" },
-      { href: "/exams", label: "Exams & Grades", icon: "📝", module: "exams" },
-      { href: "/assignments", label: "Assignments", icon: "📚", module: "assignments" },
-      { href: "/lesson-plans", label: "Lesson plans", icon: "📖", module: "lessons" },
-      { href: "/exams/approvals", label: "Result approvals", icon: "✔️", module: "exams" },
+      { href: "/classes", label: "Classes", icon: "building", module: "classes" },
+      { href: "/attendance", label: "Attendance", icon: "calendar", module: "attendance" },
+      { href: "/exams", label: "Exams & Grades", icon: "edit", module: "exams" },
+      { href: "/assignments", label: "Assignments", icon: "book", module: "assignments" },
+      { href: "/lesson-plans", label: "Lesson plans", icon: "book-open", module: "lessons" },
+      { href: "/exams/approvals", label: "Result approvals", icon: "check-circle", module: "exams" },
     ],
   },
   {
     section: "Finance",
     links: [
-      { href: "/finance", label: "Fees & Invoices", icon: "💳", module: "finance" },
-      { href: "/payroll", label: "Payroll", icon: "💼", module: "payroll" },
+      { href: "/finance", label: "Fees & Invoices", icon: "credit-card", module: "finance" },
+      { href: "/payroll", label: "Payroll", icon: "briefcase", module: "payroll" },
     ],
   },
   {
     section: "School",
     links: [
-      { href: "/messages", label: "Messages", icon: "✉️", module: "messages" },
-      { href: "/announcements", label: "Announcements", icon: "📣", module: "announcements" },
-      { href: "/admin", label: "Administration", icon: "⚙️", module: "admin" },
+      { href: "/messages", label: "Messages", icon: "mail", module: "messages" },
+      { href: "/announcements", label: "Announcements", icon: "megaphone", module: "announcements" },
+      { href: "/admin", label: "Administration", icon: "settings", module: "admin" },
     ],
   },
 ];
@@ -133,6 +134,31 @@ export function AppShell({ children }: { children: ReactNode }) {
     setLocal(s);
     setChecked(true);
   }, [router]);
+
+  // 2-hour inactivity sign-out. Real interactions (click/type/scroll/touch)
+  // stamp a shared last-activity marker; a minute-ticker ends the session
+  // once the user has been away for IDLE_TIMEOUT_MS. The API enforces the
+  // same window server-side (refresh tokens live 2h), so this is the UX
+  // half of the rule, not the only wall.
+  useEffect(() => {
+    if (!session) return;
+    touchActivity(); // signing in / opening the app counts as activity
+    const mark = () => touchActivity();
+    const events: Array<keyof WindowEventMap> = ["pointerdown", "keydown", "wheel", "touchstart", "scroll"];
+    events.forEach((e) => window.addEventListener(e, mark, { passive: true }));
+    const check = () => {
+      if (idleMs() > IDLE_TIMEOUT_MS) {
+        setSession(null); // storage event signs out every other tab too
+        router.replace("/login?reason=idle");
+      }
+    };
+    const timer = setInterval(check, 60_000);
+    check();
+    return () => {
+      events.forEach((e) => window.removeEventListener(e, mark));
+      clearInterval(timer);
+    };
+  }, [session, router]);
 
   // Unread badges (messages + announcements) for EVERY portal (staff,
   // parents, students); refreshed on navigation + every minute, and
@@ -252,7 +278,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             onClick={() => setSidebarOpen(false)}
             aria-label="Close menu"
           >
-            ✕
+            <Icon name="x" className="h-4 w-4 text-white" />
           </button>
         </div>
 
@@ -278,7 +304,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                         : "text-slate-300 hover:bg-white/10 hover:text-white")
                     }
                   >
-                    <span aria-hidden>{link.icon}</span>
+                    <Icon name={link.icon} className="h-4 w-4 text-white" />
                     <span className="flex-1">{link.label}</span>
                     {showBadge && (
                       <span
@@ -312,7 +338,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               onClick={() => setSidebarOpen(true)}
               aria-label="Open menu"
             >
-              ☰
+              <Icon name="menu" className="h-4 w-4 text-white" />
             </button>
             <div className="hidden text-sm text-slate-400 lg:block">{BRAND.tagline}</div>
           </div>
@@ -329,7 +355,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                 title={soundOn ? "Notification sound on — click to mute" : "Notification sound off — click to enable"}
                 aria-label="Toggle notification sound"
               >
-                {soundOn ? "🔔" : "🔕"}
+                <Icon name={soundOn ? "bell" : "bell-off"} className="h-4 w-4 text-white" />
               </button>
               <button
                 onClick={toggleTheme}
@@ -337,7 +363,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                 title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
                 aria-label="Toggle dark mode"
               >
-                {theme === "dark" ? "☀️" : "🌙"}
+                <Icon name={theme === "dark" ? "sun" : "moon"} className="h-4 w-4 text-white" />
               </button>
               <button
                 onClick={() => setShowAccount(true)}

@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { get, ApiClientError } from "@/lib/api";
 import { formatDate, fullName, gradeLabel, localDateIso } from "@/lib/format";
 import { Button, Card, ErrorNote, Field, PageHeader, Select, Spinner, cx } from "@/components/ui";
+import { Icon } from "@/components/icons";
 
 /**
  * Attendance report between two dates — one row per student, one column per
@@ -85,7 +86,7 @@ export default function AttendanceReportPage() {
         <PageHeader
           title="Attendance report"
           subtitle="Generate a printable attendance table between two dates — for a class or a single student"
-          actions={<Button variant="secondary" onClick={() => window.print()} disabled={!report}>🖨 Print</Button>}
+          actions={<Button variant="secondary" onClick={() => window.print()} disabled={!report}><Icon name="printer" className="h-4 w-4" /> Print</Button>}
         />
 
         <Card className="mb-6 flex flex-wrap items-end gap-4 p-4">

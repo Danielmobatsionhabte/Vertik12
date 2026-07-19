@@ -6,6 +6,7 @@ import { get, post, getSession, ApiClientError } from "@/lib/api";
 import { formatDate, humanize } from "@/lib/format";
 import { Badge, Button, Card, ErrorNote, Field, Input, Modal, PageHeader, Select, Spinner } from "@/components/ui";
 import { Pager } from "@/components/data-table";
+import { Icon } from "@/components/icons";
 
 interface AnnouncementRow {
   id: string;
@@ -75,7 +76,7 @@ export default function AnnouncementsPage() {
             <Card key={a.id} className="p-5">
               <div className="flex items-start justify-between gap-3">
                 <h2 className="font-semibold text-slate-900">
-                  {a.pinned && <span title="Pinned" className="mr-1">📌</span>}
+                  {a.pinned && <span title="Pinned" className="mr-1 inline-flex align-middle"><Icon name="pin" className="h-4 w-4" /></span>}
                   {a.title}
                 </h2>
                 <Badge tone="gray">{humanize(a.audience)}</Badge>

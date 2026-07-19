@@ -1,0 +1,125 @@
+name: Deploy
+
+# Production deploy: push to main → apply DB schema, deploy the API stack
+# (Lambda + API Gateway + DynamoDB + S3 + CloudFront), then build and
+# upload the static web app.
+#
+# Required repository configuration (Settings → Secrets and variables → Actions):
+#   Secrets:
+#     AWS_DEPLOY_ROLE_ARN   IAM role assumed via GitHub OIDC (docs/DEPLOYMENT.md §7)
+#     DATABASE_URL          postgresql://…?sslmode=require (the RDS instance)
+#     JWT_ACCESS_SECRET     long random string
+#     JWT_REFRESH_SECRET    long random string
+#   Variables:
+#     AWS_REGION            e.g. eu-central-1
+#     ARTIFACTS_BUCKET      S3 bucket for CloudFormation packaging artifacts
+#     CORS_ORIGIN           e.g. https://xxxx.cloudfront.net
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write # GitHub OIDC → AWS role
+  contents: read
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+env:
+  STACK_NAME: vertik12
+
+jobs:
+  deploy-api:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Switch Prisma to PostgreSQL and generate client
+        run: |
+          node apps/api/scripts/set-db-provider.mjs postgresql
+          npm run db:generate -w @vertik12/api
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Apply database schema (prisma db push)
+        run: npm run db:push -w @vertik12/api
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: Build Lambda bundle
+        run: npm run build:lambda -w @vertik12/api
+
+      - name: Deploy CloudFormation stack
+        run: |
+          aws cloudformation package \
+            --template-file infra/template.yaml \
+            --s3-bucket "${{ vars.ARTIFACTS_BUCKET }}" \
+            --output-template-file packaged.yaml
+          aws cloudformation deploy \
+            --template-file packaged.yaml \
+            --stack-name "$STACK_NAME" \
+            --capabilities CAPABILITY_IAM \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides \
+              "DatabaseUrl=${{ secrets.DATABASE_URL }}" \
+              "JwtAccessSecret=${{ secrets.JWT_ACCESS_SECRET }}" \
+              "JwtRefreshSecret=${{ secrets.JWT_REFRESH_SECRET }}" \
+              "CorsOrigin=${{ vars.CORS_ORIGIN }}"
+
+  deploy-web:
+    needs: deploy-api
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Read stack outputs
+        id: stack
+        run: |
+          get_output() {
+            aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
+              --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text
+          }
+          echo "api_url=$(get_output ApiBaseUrl)" >> "$GITHUB_OUTPUT"
+          echo "bucket=$(get_output WebBucketName)" >> "$GITHUB_OUTPUT"
+          echo "dist_id=$(get_output DistributionId)" >> "$GITHUB_OUTPUT"
+
+      - name: Build static web app
+        run: npm run build -w @vertik12/web
+        env:
+          NEXT_OUTPUT: export
+          NEXT_PUBLIC_API_URL: ${{ steps.stack.outputs.api_url }}
+
+      - name: Upload to S3
+        run: aws s3 sync apps/web/out "s3://${{ steps.stack.outputs.bucket }}" --delete
+
+      - name: Invalidate CloudFront cache
+        run: aws cloudfront create-invalidation --distribution-id "${{ steps.stack.outputs.dist_id }}" --paths "/*"

@@ -7,6 +7,7 @@ import { fileToAttachment, downloadAttachment } from "@/lib/files";
 import { formatDate, fullName, localDateIso } from "@/lib/format";
 import { Badge, Button, Card, ErrorNote, Field, Input, Modal, PageHeader, Select, Spinner } from "@/components/ui";
 import { Pager } from "@/components/data-table";
+import { Icon } from "@/components/icons";
 
 /**
  * Teacher › Assignments: send homework to a class (parents see it in the
@@ -145,7 +146,7 @@ export default function AssignmentsPage() {
                     className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-brand-600 hover:underline"
                     onClick={() => downloadAttachment(`/assignments/${a.id}/attachment`, a.attachmentName ?? undefined).catch((e) => setError(e.message))}
                   >
-                    📎 {a.attachmentName}
+                    <Icon name="paperclip" className="h-3.5 w-3.5" /> {a.attachmentName}
                   </button>
                 )}
               </Card>
@@ -268,7 +269,7 @@ function AssignmentModal({ mySubjects, editing, onClose, onSaved }: {
             <Input type="file" accept={ATTACHMENT_ACCEPT} onChange={(e) => void pickFile(e)} />
             {currentFileLabel && (
               <p className="flex items-center gap-2 text-xs text-slate-600">
-                📎 {currentFileLabel}
+                <Icon name="paperclip" className="h-3.5 w-3.5" /> {currentFileLabel}
                 <button
                   type="button"
                   className="text-rose-600 underline"
@@ -346,7 +347,7 @@ function SubmissionsModal({ assignment, onClose }: { assignment: AssignmentRow; 
                     className="inline-flex items-center gap-1 text-xs font-medium text-brand-600 hover:underline"
                     onClick={() => downloadAttachment(`/assignments/submissions/${s.id}/attachment`, s.attachmentName ?? undefined).catch((e) => setError(e.message))}
                   >
-                    📎 {s.attachmentName}
+                    <Icon name="paperclip" className="h-3.5 w-3.5" /> {s.attachmentName}
                   </button>
                 )}
                 {s.linkUrl && (

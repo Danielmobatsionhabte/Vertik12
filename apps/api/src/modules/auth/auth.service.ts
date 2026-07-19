@@ -5,8 +5,21 @@ import {
   hashPassword, hashToken, signAccessToken, signRefreshToken,
   verifyPassword, verifyRefreshToken,
 } from "../../lib/auth-tokens";
+import { env } from "../../config/env";
 
-const REFRESH_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/**
+ * DB-side expiry mirrors the JWT_REFRESH_TTL the token itself is signed
+ * with ("2h", "15m", "7d"…). Each refresh rotates the token with a fresh
+ * TTL, so this is an idle timeout: stop using the app for this long and
+ * the session ends.
+ */
+function ttlToMs(ttl: string): number {
+  const m = /^(\d+)([smhd])$/.exec(ttl.trim());
+  if (!m) return 2 * 60 * 60 * 1000; // fall back to 2 hours
+  const unit = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 }[m[2] as "s" | "m" | "h" | "d"];
+  return Number(m[1]) * unit;
+}
+const REFRESH_TTL_MS = ttlToMs(env.JWT_REFRESH_TTL);
 
 async function issueTokens(user: { id: string; email: string; firstName: string; lastName: string; role: string; mustChangePassword: boolean }): Promise<AuthResponse> {
   const accessToken = signAccessToken({

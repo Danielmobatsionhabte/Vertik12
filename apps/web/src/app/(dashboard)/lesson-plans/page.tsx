@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { ATTACHMENT_ACCEPT, type AttachmentInput, type Paginated } from "@vertik12/shared";
 import { get, post, patch, del, getSession, ApiClientError } from "@/lib/api";
 import { useGrades, gradeName } from "@/lib/grades";
@@ -8,6 +8,7 @@ import { fileToAttachment, downloadAttachment } from "@/lib/files";
 import { formatDate, humanize } from "@/lib/format";
 import { Badge, Button, Card, ErrorNote, Field, Input, Modal, PageHeader, Select, Spinner } from "@/components/ui";
 import { Pager } from "@/components/data-table";
+import { Icon } from "@/components/icons";
 
 /**
  * Lesson plans, per grade × subject. The administration publishes the plan
@@ -49,7 +50,7 @@ interface PlanRow {
 }
 
 function StatusBadge({ status }: { status: string }) {
-  if (status === "PENDING") return <Badge tone="yellow">⏳ Awaiting approval</Badge>;
+  if (status === "PENDING") return <Badge tone="yellow">Awaiting approval</Badge>;
   if (status === "REJECTED") return <Badge tone="red">Rejected</Badge>;
   if (status === "DRAFT") return <Badge tone="gray">Draft</Badge>;
   return null; // published needs no badge
@@ -57,7 +58,11 @@ function StatusBadge({ status }: { status: string }) {
 
 export default function LessonPlansPage() {
   const grades = useGrades();
-  const isAdmin = ["SUPER_ADMIN", "ADMIN"].includes(getSession()?.user.role ?? "");
+  const role = getSession()?.user.role ?? "";
+  const isAdmin = ["SUPER_ADMIN", "ADMIN"].includes(role);
+  // Registrars are read-only: they browse/print the published curriculum
+  // (list + calendar) but never author or review plans.
+  const isRegistrar = role === "REGISTRAR";
   const [subjects, setSubjects] = useState<SubjectOption[]>([]);
   // Teachers are scoped to the subject × grade pairs they teach.
   const [pairs, setPairs] = useState<TeachingPair[] | null>(null);
@@ -77,7 +82,7 @@ export default function LessonPlansPage() {
   const [reviewBusy, setReviewBusy] = useState<string | null>(null);
 
   useEffect(() => {
-    if (isAdmin) {
+    if (isAdmin || isRegistrar) {
       get<SubjectOption[]>("/academics/subjects").then(setSubjects).catch(() => setSubjects([]));
       setPairs(null);
     } else {
@@ -99,7 +104,7 @@ export default function LessonPlansPage() {
         })
         .catch(() => { setPairs([]); setSubjects([]); });
     }
-  }, [isAdmin]);
+  }, [isAdmin, isRegistrar]);
 
   const load = useCallback(() => {
     const params = new URLSearchParams({ page: String(page), pageSize: "10" });
@@ -113,7 +118,23 @@ export default function LessonPlansPage() {
   }, [page, gradeFilter, subjectFilter, statusFilter, weekFilter, mineOnly, search]);
 
   const locked = data?.locked ?? false;
-  const teacherLocked = locked && !isAdmin;
+  // Registrars are always read-only, so the lock banner is teacher noise.
+  const teacherLocked = locked && !isAdmin && !isRegistrar;
+  const readOnly = isRegistrar || teacherLocked;
+
+  // List ⇄ calendar. The calendar lays the published weekly plans over the
+  // active academic year's dates and is built to print cleanly.
+  const [view, setView] = useState<"list" | "calendar">("list");
+  const calParams = useMemo(() => {
+    const p = new URLSearchParams();
+    if (gradeFilter) p.set("gradeLevel", gradeFilter);
+    if (subjectFilter) p.set("subjectId", subjectFilter);
+    if (statusFilter) p.set("status", statusFilter);
+    if (weekFilter) p.set("week", weekFilter);
+    if (mineOnly) p.set("mine", "1");
+    if (search) p.set("search", search);
+    return p.toString();
+  }, [gradeFilter, subjectFilter, statusFilter, weekFilter, mineOnly, search]);
 
   /** Admin closes/opens curriculum editing for teachers. */
   async function toggleLock() {
@@ -175,35 +196,55 @@ export default function LessonPlansPage() {
         title="Lesson plans"
         subtitle="The curriculum plan teachers of each grade and subject follow, week by week"
         actions={
-          <div className="flex gap-2">
-            {isAdmin && (
-              <Button variant="secondary" onClick={() => void toggleLock()}>
-                {locked ? "🔓 Re-open teacher editing" : "🔒 Lock teacher editing"}
+          <div className="flex flex-wrap gap-2 print:hidden">
+            <div className="flex overflow-hidden rounded-lg border border-slate-300">
+              {(["list", "calendar"] as const).map((v) => (
+                <button
+                  key={v}
+                  onClick={() => setView(v)}
+                  className={
+                    "flex items-center gap-1.5 px-3 py-2 text-sm font-medium transition-colors " +
+                    (view === v ? "bg-brand-gradient-soft text-white" : "bg-white text-slate-600 hover:bg-slate-50")
+                  }
+                >
+                  <Icon name={v === "list" ? "list" : "calendar"} className="h-4 w-4" />
+                  {v === "list" ? "List" : "Calendar"}
+                </button>
+              ))}
+            </div>
+            {view === "calendar" && (
+              <Button variant="secondary" onClick={() => window.print()}>
+                <Icon name="printer" className="h-4 w-4" /> Print calendar
               </Button>
             )}
-            {!teacherLocked && <Button onClick={() => setShowCreate(true)}>+ New lesson plan</Button>}
+            {isAdmin && (
+              <Button variant="secondary" onClick={() => void toggleLock()}>
+                {locked ? (<><Icon name="unlock" className="h-4 w-4" /> Re-open teacher editing</>) : (<><Icon name="lock" className="h-4 w-4" /> Lock teacher editing</>)}
+              </Button>
+            )}
+            {!readOnly && <Button onClick={() => setShowCreate(true)}>+ New lesson plan</Button>}
           </div>
         }
       />
 
       {teacherLocked && (
-        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-          🔒 The administration has locked lesson-plan editing — plans are read-only until an administrator re-opens it.
+        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 print:hidden">
+          <Icon name="lock" className="mr-1 inline h-3.5 w-3.5" />The administration has locked lesson-plan editing — plans are read-only until an administrator re-opens it.
         </div>
       )}
       {locked && isAdmin && (
-        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-          🔒 Teacher editing is currently locked. You can still add, modify and review plans yourself.
+        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 print:hidden">
+          <Icon name="lock" className="mr-1 inline h-3.5 w-3.5" />Teacher editing is currently locked. You can still add, modify and review plans yourself.
         </div>
       )}
       {notice && (
-        <div className="mb-4 rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800">
+        <div className="mb-4 rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800 print:hidden">
           {notice} <button className="ml-2 underline" onClick={() => setNotice(null)}>Dismiss</button>
         </div>
       )}
       <ErrorNote message={error} />
 
-      <div className="mb-4 flex flex-wrap items-center gap-3">
+      <div className="mb-4 flex flex-wrap items-center gap-3 print:hidden">
         <Select className="max-w-[180px]" value={gradeFilter} onChange={(e) => { setGradeFilter(e.target.value); setPage(1); }}>
           <option value="">All grades</option>
           {grades.map((g) => <option key={g.code} value={g.code}>{g.name}</option>)}
@@ -215,7 +256,7 @@ export default function LessonPlansPage() {
         <Select className="max-w-[190px]" value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}>
           <option value="">All statuses</option>
           <option value="PUBLISHED">Published</option>
-          <option value="PENDING">⏳ Awaiting approval</option>
+          <option value="PENDING">Awaiting approval</option>
           <option value="REJECTED">Rejected</option>
           <option value="DRAFT">Draft</option>
         </Select>
@@ -231,13 +272,17 @@ export default function LessonPlansPage() {
           value={search}
           onChange={(e) => { setSearch(e.target.value); setPage(1); }}
         />
-        <label className="flex items-center gap-1.5 text-sm text-slate-600">
-          <input type="checkbox" checked={mineOnly} onChange={(e) => { setMineOnly(e.target.checked); setPage(1); }} />
-          My plans only
-        </label>
+        {!isRegistrar && (
+          <label className="flex items-center gap-1.5 text-sm text-slate-600">
+            <input type="checkbox" checked={mineOnly} onChange={(e) => { setMineOnly(e.target.checked); setPage(1); }} />
+            My plans only
+          </label>
+        )}
       </div>
 
-      {!data ? (
+      {view === "calendar" ? (
+        <PlanCalendar params={calParams} onOpen={setViewing} />
+      ) : !data ? (
         <div className="flex justify-center py-24 text-brand-600"><Spinner /></div>
       ) : data.items.length === 0 ? (
         <Card className="p-10 text-center text-sm text-slate-400">
@@ -264,10 +309,10 @@ export default function LessonPlansPage() {
                   {isAdmin && p.status === "PENDING" && (
                     <>
                       <Button className="!px-3 !py-1 text-xs" loading={reviewBusy === p.id} onClick={() => void review(p, "APPROVE")}>
-                        ✓ Approve
+                        <Icon name="check" className="h-3.5 w-3.5" /> Approve
                       </Button>
                       <Button variant="danger" className="!px-3 !py-1 text-xs" loading={reviewBusy === p.id} onClick={() => void review(p, "REJECT")}>
-                        ✗ Reject
+                        <Icon name="x" className="h-3.5 w-3.5" /> Reject
                       </Button>
                     </>
                   )}
@@ -291,7 +336,7 @@ export default function LessonPlansPage() {
                   className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-brand-600 hover:underline"
                   onClick={() => downloadAttachment(`/lesson-plans/${p.id}/attachment`, p.attachmentName ?? undefined).catch((e) => setError(e.message))}
                 >
-                  📎 {p.attachmentName}
+                  <Icon name="paperclip" className="h-3.5 w-3.5" /> {p.attachmentName}
                 </button>
               )}
             </Card>
@@ -316,6 +361,240 @@ export default function LessonPlansPage() {
       )}
 
       {viewing && <PlanViewModal plan={viewing} onClose={() => setViewing(null)} onError={setError} />}
+    </div>
+  );
+}
+
+// ============================ calendar view ============================
+
+interface AcademicYearRow {
+  id: string;
+  name: string;
+  isActive: boolean;
+  startDate: string;
+  endDate: string;
+}
+
+const DAY_MS = 86_400_000;
+
+/** Monday 00:00 of the week containing `d` (local time). */
+function startOfWeek(d: Date): Date {
+  const out = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const dow = (out.getDay() + 6) % 7; // Mon=0 … Sun=6
+  out.setDate(out.getDate() - dow);
+  return out;
+}
+
+const addDays = (d: Date, n: number) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+
+/**
+ * Month calendar of the curriculum: lesson-plan week numbers are mapped
+ * onto real dates (week 1 = the week the active academic year starts), and
+ * each calendar week shows the plans scheduled for it. Designed to print:
+ * navigation and filters disappear, a title line with the month and year
+ * appears, and week bands avoid page breaks.
+ */
+function PlanCalendar({ params, onOpen }: { params: string; onOpen: (p: PlanRow) => void }) {
+  const grades = useGrades();
+  // undefined = still loading, null = no active year configured
+  const [year, setYear] = useState<AcademicYearRow | null | undefined>(undefined);
+  const [plans, setPlans] = useState<PlanRow[] | null>(null);
+  const [month, setMonth] = useState<Date>(() => new Date());
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    get<AcademicYearRow[]>("/academics/years")
+      .then((ys) => {
+        const active = ys.find((y) => y.isActive) ?? null;
+        setYear(active);
+        if (active) {
+          // Open on today when it falls inside the year, else on the year start.
+          const now = new Date();
+          const s = new Date(active.startDate);
+          const e = new Date(active.endDate);
+          const anchor = now < s ? s : now > e ? e : now;
+          setMonth(new Date(anchor.getFullYear(), anchor.getMonth(), 1));
+        }
+      })
+      .catch(() => setYear(null));
+  }, []);
+
+  // The calendar needs every matching plan, not one page — walk the pages
+  // (the API caps pageSize at 100) with a sane upper bound.
+  useEffect(() => {
+    let cancelled = false;
+    setPlans(null);
+    const t = setTimeout(() => {
+      void (async () => {
+        const items: PlanRow[] = [];
+        for (let page = 1; page <= 10; page++) {
+          const d = await get<Paginated<PlanRow>>(`/lesson-plans?${params ? `${params}&` : ""}page=${page}&pageSize=100`);
+          items.push(...d.items);
+          if (page >= d.totalPages) break;
+        }
+        if (!cancelled) setPlans(items);
+      })().catch((err) => {
+        if (!cancelled) setError(err instanceof ApiClientError ? err.message : "Failed to load the lesson plans");
+      });
+    }, 300);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [params]);
+
+  const week1Monday = useMemo(() => (year ? startOfWeek(new Date(year.startDate)) : null), [year]);
+  const totalWeeks = useMemo(
+    () => (year && week1Monday ? Math.max(1, Math.ceil((new Date(year.endDate).getTime() - week1Monday.getTime()) / (7 * DAY_MS))) : 0),
+    [year, week1Monday],
+  );
+  /** Academic week number for the week starting on `monday`, or null when outside the year. */
+  const weekOf = useCallback((monday: Date): number | null => {
+    if (!week1Monday) return null;
+    const n = Math.floor((monday.getTime() - week1Monday.getTime()) / (7 * DAY_MS)) + 1;
+    return n >= 1 && n <= totalWeeks ? n : null;
+  }, [week1Monday, totalWeeks]);
+
+  const plansByWeek = useMemo(() => {
+    const map = new Map<number, PlanRow[]>();
+    for (const p of plans ?? []) {
+      if (!p.week) continue;
+      const list = map.get(p.week) ?? [];
+      list.push(p);
+      map.set(p.week, list);
+    }
+    for (const list of map.values()) {
+      list.sort((a, b) => a.gradeLevel.localeCompare(b.gradeLevel) || a.subject.name.localeCompare(b.subject.name));
+    }
+    return map;
+  }, [plans]);
+  const unscheduled = useMemo(() => (plans ?? []).filter((p) => !p.week), [plans]);
+
+  if (year === undefined || plans === null) {
+    if (error) return <ErrorNote message={error} />;
+    return <div className="flex justify-center py-24 text-brand-600"><Spinner /></div>;
+  }
+  if (year === null) {
+    return (
+      <Card className="p-10 text-center text-sm text-slate-500">
+        The calendar needs an active academic year to map lesson-plan weeks onto dates.
+        Ask an administrator to activate one under Administration → Academic years.
+      </Card>
+    );
+  }
+
+  // All the Mondays whose week overlaps the displayed month.
+  const firstOfMonth = new Date(month.getFullYear(), month.getMonth(), 1);
+  const lastOfMonth = new Date(month.getFullYear(), month.getMonth() + 1, 0);
+  const mondays: Date[] = [];
+  for (let m = startOfWeek(firstOfMonth); m <= lastOfMonth; m = addDays(m, 7)) mondays.push(m);
+
+  const monthLabel = month.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+  const today = new Date();
+  const isToday = (d: Date) =>
+    d.getFullYear() === today.getFullYear() && d.getMonth() === today.getMonth() && d.getDate() === today.getDate();
+
+  return (
+    <div className="space-y-4">
+      {/* Print-only title — the on-screen navigation bar is hidden on paper */}
+      <div className="hidden print:block">
+        <p className="text-lg font-bold text-slate-900">Lesson plan calendar — {monthLabel}</p>
+        <p className="text-xs text-slate-500">Academic year {year.name}</p>
+      </div>
+
+      <Card className="overflow-hidden print:rounded-none print:border-0 print:shadow-none">
+        <div className="flex items-center justify-between gap-2 border-b border-slate-100 p-3 print:hidden">
+          <Button variant="secondary" className="!px-2.5 !py-1.5" aria-label="Previous month"
+            onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))}>
+            <Icon name="chevron-left" className="h-4 w-4" />
+          </Button>
+          <p className="text-sm font-semibold text-slate-800">
+            {monthLabel}
+            <span className="ml-2 font-normal text-slate-400">· {year.name}</span>
+          </p>
+          <Button variant="secondary" className="!px-2.5 !py-1.5" aria-label="Next month"
+            onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))}>
+            <Icon name="chevron-right" className="h-4 w-4" />
+          </Button>
+        </div>
+
+        <table className="w-full table-fixed text-sm">
+          <thead>
+            <tr className="border-b border-slate-200 text-[11px] uppercase tracking-wide text-slate-400">
+              {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => (
+                <th key={d} className="px-2 py-1.5 text-left font-semibold">{d}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {mondays.map((monday) => {
+              const n = weekOf(monday);
+              const weekPlans = n ? plansByWeek.get(n) ?? [] : [];
+              return (
+                <Fragment key={monday.toISOString()}>
+                  <tr className="border-t border-slate-200">
+                    {Array.from({ length: 7 }, (_, i) => addDays(monday, i)).map((day) => (
+                      <td key={day.toISOString()} className="px-2 pt-1.5 align-top">
+                        <span
+                          className={
+                            "inline-flex h-6 w-6 items-center justify-center rounded-full text-xs tabular-nums " +
+                            (isToday(day)
+                              ? "bg-brand-gradient-soft font-semibold text-white print:bg-transparent print:font-bold print:text-slate-900"
+                              : day.getMonth() === month.getMonth() ? "text-slate-700" : "text-slate-300")
+                          }
+                        >
+                          {day.getDate()}
+                        </span>
+                      </td>
+                    ))}
+                  </tr>
+                  <tr>
+                    <td colSpan={7} className="px-2 pb-2 pt-1" style={{ breakInside: "avoid" }}>
+                      <div className="flex flex-wrap items-start gap-1.5">
+                        {n ? (
+                          <span className="mt-0.5 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500 print:border print:border-slate-300 print:bg-transparent">
+                            Week {n}
+                          </span>
+                        ) : null}
+                        {weekPlans.map((p) => (
+                          <button
+                            key={p.id}
+                            onClick={() => onOpen(p)}
+                            className="rounded-md border border-brand-200 bg-brand-50 px-2 py-1 text-left text-xs hover:bg-brand-100 print:border-slate-300 print:bg-transparent"
+                          >
+                            <span className="block font-medium text-slate-800">{p.title}</span>
+                            <span className="block text-[10px] text-slate-500">
+                              {gradeName(grades, p.gradeLevel)} · {p.subject.name}
+                              {p.status !== "PUBLISHED" ? ` · ${humanize(p.status)}` : ""}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </td>
+                  </tr>
+                </Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      </Card>
+
+      {unscheduled.length > 0 && (
+        <Card className="break-inside-avoid p-4 print:rounded-none print:border-0 print:shadow-none">
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+            General plans (no week assigned)
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {unscheduled.map((p) => (
+              <button
+                key={p.id}
+                onClick={() => onOpen(p)}
+                className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-left text-xs hover:bg-slate-100 print:bg-transparent"
+              >
+                <span className="block font-medium text-slate-800">{p.title}</span>
+                <span className="block text-[10px] text-slate-500">{gradeName(grades, p.gradeLevel)} · {p.subject.name}</span>
+              </button>
+            ))}
+          </div>
+        </Card>
+      )}
     </div>
   );
 }
@@ -351,7 +630,7 @@ function PlanViewModal({ plan, onClose, onError }: { plan: PlanRow; onClose: () 
             className="inline-flex items-center gap-1 text-sm font-medium text-brand-600 hover:underline"
             onClick={() => downloadAttachment(`/lesson-plans/${plan.id}/attachment`, plan.attachmentName ?? undefined).catch((e) => onError(e.message))}
           >
-            📎 Download {plan.attachmentName}
+            <Icon name="paperclip" className="h-3.5 w-3.5" /> Download {plan.attachmentName}
           </button>
         )}
         <div className="flex justify-end">
@@ -550,7 +829,7 @@ function PlanModal({ subjects, pairs, editing, onClose, onSaved }: {
               <Input type="file" accept={ATTACHMENT_ACCEPT} onChange={(e) => void pickFile(e)} />
               {currentFileLabel && (
                 <p className="flex items-center gap-2 text-xs text-slate-600">
-                  📎 {currentFileLabel}
+                  <Icon name="paperclip" className="h-3.5 w-3.5" /> {currentFileLabel}
                   <button type="button" className="text-rose-600 underline" onClick={() => { setAttachment(null); setRemoveAttachment(true); }}>
                     Remove
                   </button>

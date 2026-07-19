@@ -345,8 +345,14 @@ export async function collectPayment(input: CollectPaymentInput, recordedBy: str
     discountPercent = input.period === "YEARLY" ? (settings?.yearlyDiscountPercent ?? 0) : 0;
   }
 
+  // The yearly discount applies to the fee computation only — never to the
+  // cashier's additional line items, which are appended after it.
+  const feeSubtotal = items.reduce((s, i) => s + i.amount, 0);
+  const discount = Math.round((feeSubtotal * discountPercent) / 100);
+  for (const extra of input.extras ?? []) {
+    items.push({ description: extra.description, amount: extra.amount });
+  }
   const subtotal = items.reduce((s, i) => s + i.amount, 0);
-  const discount = Math.round((subtotal * discountPercent) / 100);
   const total = subtotal - discount;
 
   const { invoice, payment } = await prisma.$transaction(async (tx) => {

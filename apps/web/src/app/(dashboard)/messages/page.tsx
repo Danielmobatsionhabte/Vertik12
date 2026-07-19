@@ -6,6 +6,7 @@ import { get, post, ApiClientError } from "@/lib/api";
 import { humanize } from "@/lib/format";
 import { Badge, Button, Card, ErrorNote, Field, Input, Modal, PageHeader, Select, Spinner, cx } from "@/components/ui";
 import { Pager } from "@/components/data-table";
+import { Icon } from "@/components/icons";
 
 /**
  * Internal messaging for every portal — email-like inbox/sent/compose.
@@ -64,7 +65,7 @@ export default function MessagesPage() {
       <PageHeader
         title="Messages"
         subtitle="Internal mail between the school and its staff, parents and students"
-        actions={<Button onClick={() => { setReplyTo(null); setShowCompose(true); }}>✉ Compose</Button>}
+        actions={<Button onClick={() => { setReplyTo(null); setShowCompose(true); }}><Icon name="mail" className="h-4 w-4" /> Compose</Button>}
       />
 
       <div className="mb-4 flex gap-1 rounded-lg bg-slate-100 p-1 text-sm font-medium text-slate-600 w-fit">

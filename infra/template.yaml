@@ -1,0 +1,286 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Vertik12 production stack: Express API on Lambda behind an API Gateway
+  HTTP API, DynamoDB + S3 document store, and the static Next.js web app
+  on S3 behind CloudFront. The PostgreSQL database (RDS) is created
+  outside this stack (see docs/DEPLOYMENT.md) and passed in as DatabaseUrl.
+
+Parameters:
+  DatabaseUrl:
+    Type: String
+    NoEcho: true
+    Description: "PostgreSQL connection string, e.g. postgresql://user:pass@host:5432/vertik12?sslmode=require"
+  JwtAccessSecret:
+    Type: String
+    NoEcho: true
+    Description: Long random string (e.g. openssl rand -hex 64)
+  JwtRefreshSecret:
+    Type: String
+    NoEcho: true
+    Description: Long random string, different from JwtAccessSecret
+  CorsOrigin:
+    Type: String
+    Default: "http://localhost:3000"
+    Description: >
+      Comma-separated origins allowed by the API. After the first deploy,
+      set this to the CloudFront URL (https://xxxx.cloudfront.net) and/or
+      your custom domain, then redeploy.
+  DefaultCurrency:
+    Type: String
+    Default: USD
+    Description: ISO 4217 currency for invoices & payroll
+  StripeSecretKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Optional — leave empty to use the built-in mock payment provider
+  StripeWebhookSecret:
+    Type: String
+    NoEcho: true
+    Default: ""
+  SmtpHost:
+    Type: String
+    Default: ""
+    Description: Optional — leave empty to simulate outbound email
+  SmtpPort:
+    Type: String
+    Default: "587"
+  SmtpUser:
+    Type: String
+    Default: ""
+  SmtpPass:
+    Type: String
+    NoEcho: true
+    Default: ""
+  SmtpFrom:
+    Type: String
+    Default: ""
+
+Conditions:
+  HasStripeKey: !Not [!Equals [!Ref StripeSecretKey, ""]]
+  HasStripeWebhook: !Not [!Equals [!Ref StripeWebhookSecret, ""]]
+  HasSmtpHost: !Not [!Equals [!Ref SmtpHost, ""]]
+  HasSmtpUser: !Not [!Equals [!Ref SmtpUser, ""]]
+  HasSmtpPass: !Not [!Equals [!Ref SmtpPass, ""]]
+  HasSmtpFrom: !Not [!Equals [!Ref SmtpFrom, ""]]
+
+Resources:
+  # ============================ API (Lambda) ============================
+
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      Description: Vertik12 API
+
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-api"
+      Description: Vertik12 Express API (serverless-http)
+      CodeUri: ../apps/api/dist-lambda
+      Handler: index.handler
+      Runtime: nodejs20.x
+      Architectures: [x86_64] # matches the bundled rhel-openssl-3.0.x Prisma engine
+      MemorySize: 1024
+      Timeout: 30 # API Gateway's own cap is 30 s
+      Environment:
+        Variables:
+          NODE_ENV: production
+          DATABASE_URL: !Ref DatabaseUrl
+          CORS_ORIGIN: !Ref CorsOrigin
+          JWT_ACCESS_SECRET: !Ref JwtAccessSecret
+          JWT_REFRESH_SECRET: !Ref JwtRefreshSecret
+          DEFAULT_CURRENCY: !Ref DefaultCurrency
+          DOCUMENT_STORE: dynamodb
+          DYNAMODB_TABLE: !Ref DocumentsTable
+          DOCUMENTS_BUCKET: !Ref DocumentsBucket
+          # Deterministic engine resolution for the esbuild-bundled Prisma client
+          PRISMA_QUERY_ENGINE_LIBRARY: /var/task/libquery_engine-rhel-openssl-3.0.x.so.node
+          STRIPE_SECRET_KEY: !If [HasStripeKey, !Ref StripeSecretKey, !Ref "AWS::NoValue"]
+          STRIPE_WEBHOOK_SECRET: !If [HasStripeWebhook, !Ref StripeWebhookSecret, !Ref "AWS::NoValue"]
+          SMTP_HOST: !If [HasSmtpHost, !Ref SmtpHost, !Ref "AWS::NoValue"]
+          SMTP_PORT: !If [HasSmtpHost, !Ref SmtpPort, !Ref "AWS::NoValue"]
+          SMTP_USER: !If [HasSmtpUser, !Ref SmtpUser, !Ref "AWS::NoValue"]
+          SMTP_PASS: !If [HasSmtpPass, !Ref SmtpPass, !Ref "AWS::NoValue"]
+          SMTP_FROM: !If [HasSmtpFrom, !Ref SmtpFrom, !Ref "AWS::NoValue"]
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DocumentsTable
+        - S3CrudPolicy:
+            BucketName: !Ref DocumentsBucket
+      Events:
+        AnyRoute:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+
+  # ========================= document storage =========================
+
+  DocumentsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub "${AWS::StackName}-documents"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+
+  # Payloads above ~350 KB (photos, submissions) spill here as JSON;
+  # DynamoDB keeps a pointer item. See apps/api/src/lib/document-store.ts.
+  DocumentsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-documents-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  # ===================== web app (S3 + CloudFront) =====================
+
+  WebBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-web-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  WebBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCloudFrontRead
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub "${WebBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
+
+  WebOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-web-oac"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # Maps pretty URLs onto the static export's S3 keys:
+  #   /students/abc123/  →  /students/__id__/index.html   (dynamic routes)
+  #   /login/            →  /login/index.html             (everything else)
+  RewriteFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub "${AWS::StackName}-url-rewrite"
+      AutoPublish: true
+      FunctionConfig:
+        Comment: Rewrite Next.js static-export URLs to S3 keys
+        Runtime: cloudfront-js-2.0
+      FunctionCode: |
+        function handler(event) {
+          var request = event.request;
+          var uri = request.uri;
+
+          // Exact static routes that would otherwise match a dynamic pattern.
+          if (uri === "/students/new" || uri === "/students/new/") {
+            request.uri = "/students/new/index.html";
+            return request;
+          }
+
+          // Dynamic routes: serve the pre-rendered placeholder page; the
+          // browser reads the real id from the URL (see use-route-id.ts).
+          var dynamicRoutes = [
+            { re: /^\/students\/[^\/]+\/report-card\/?$/, to: "/students/__id__/report-card/index.html" },
+            { re: /^\/students\/[^\/]+\/?$/, to: "/students/__id__/index.html" },
+            { re: /^\/portal\/[^\/]+\/?$/, to: "/portal/__id__/index.html" },
+            { re: /^\/finance\/receipt\/[^\/]+\/?$/, to: "/finance/receipt/__id__/index.html" },
+            { re: /^\/payroll\/payslip\/[^\/]+\/?$/, to: "/payroll/payslip/__id__/index.html" },
+          ];
+          for (var i = 0; i < dynamicRoutes.length; i++) {
+            if (dynamicRoutes[i].re.test(uri)) {
+              request.uri = dynamicRoutes[i].to;
+              return request;
+            }
+          }
+
+          // /route/ → /route/index.html ; /route → /route/index.html
+          if (uri.endsWith("/")) request.uri = uri + "index.html";
+          else if (!uri.includes(".")) request.uri = uri + "/index.html";
+          return request;
+        }
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: Vertik12 web app
+        DefaultRootObject: index.html
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        PriceClass: PriceClass_All
+        Origins:
+          - Id: web-s3
+            DomainName: !GetAtt WebBucket.RegionalDomainName
+            OriginAccessControlId: !Ref WebOriginAccessControl
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        DefaultCacheBehavior:
+          TargetOriginId: web-s3
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          # AWS managed policy "CachingOptimized"
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt RewriteFunction.FunctionMetadata.FunctionARN
+        CustomErrorResponses:
+          # OAC returns 403 for missing keys; show the exported 404 page.
+          - ErrorCode: 403
+            ResponseCode: 404
+            ResponsePagePath: /404.html
+          - ErrorCode: 404
+            ResponseCode: 404
+            ResponsePagePath: /404.html
+
+Outputs:
+  ApiBaseUrl:
+    Description: Set NEXT_PUBLIC_API_URL to this when building the web app
+    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/api/v1"
+  WebUrl:
+    Description: The deployed web app
+    Value: !Sub "https://${Distribution.DomainName}"
+  WebBucketName:
+    Description: Upload the static export (apps/web/out) here
+    Value: !Ref WebBucket
+  DocumentsBucketName:
+    Value: !Ref DocumentsBucket
+  DocumentsTableName:
+    Value: !Ref DocumentsTable
+  DistributionId:
+    Description: For cache invalidation after web deploys
+    Value: !Ref Distribution

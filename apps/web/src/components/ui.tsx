@@ -1,6 +1,7 @@
 "use client";
 
 import { forwardRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from "react";
+import { Icon } from "@/components/icons";
 
 /**
  * Small headless-ish primitive components. Everything visual in the app is
@@ -202,7 +203,7 @@ export function Modal({ open, title, onClose, children, wide, dismissable = true
           <h2 className="text-lg font-semibold text-slate-900">{title}</h2>
           {dismissable && (
             <button onClick={onClose} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600" aria-label="Close">
-              ✕
+              <Icon name="x" className="h-4 w-4" />
             </button>
           )}
         </div>

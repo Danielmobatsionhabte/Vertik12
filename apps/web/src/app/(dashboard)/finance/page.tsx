@@ -9,6 +9,7 @@ import { useGrades } from "@/lib/grades";
 import { formatDate, formatMoney, fullName, gradeLabel, humanize } from "@/lib/format";
 import { Badge, Button, Card, ErrorNote, Field, Input, Modal, PageHeader, Select, StatCard } from "@/components/ui";
 import { DataTable, Pager } from "@/components/data-table";
+import { Icon } from "@/components/icons";
 
 interface InvoiceRow {
   id: string;
@@ -208,6 +209,9 @@ function CollectPaymentModal({ open, onClose, onCollected }: {
   const [method, setMethod] = useState<string>("CASH");
   const [reference, setReference] = useState("");
   const [note, setNote] = useState("");
+  // Additional one-off charges collected alongside the fee (uniform, books,
+  // trip…). Each row becomes its own line item on the invoice/receipt.
+  const [extras, setExtras] = useState<Array<{ description: string; amount: string }>>([]);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -249,8 +253,22 @@ function CollectPaymentModal({ open, onClose, onCollected }: {
     setMonths("1");
     setCustomAmount("");
     setAmountMode("PRESET");
+    setExtras([]);
     setError(null);
   }
+
+  const setExtra = (i: number, patch: Partial<{ description: string; amount: string }>) =>
+    setExtras((rows) => rows.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
+
+  // Live total: fee amount + every additional payment, shown while typing.
+  const baseAmount = amountMode === "CUSTOM"
+    ? (parseFloat(customAmount) > 0 ? Math.round(parseFloat(customAmount) * 100) : 0)
+    : (preset ?? 0);
+  const extrasTotal = extras.reduce(
+    (s, ex) => s + (parseFloat(ex.amount) > 0 ? Math.round(parseFloat(ex.amount) * 100) : 0),
+    0,
+  );
+  const grandTotal = baseAmount + extrasTotal;
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -260,6 +278,10 @@ function CollectPaymentModal({ open, onClose, onCollected }: {
     }
     if (amountMode === "CUSTOM" && !(parseFloat(customAmount) > 0)) {
       setError("Enter a valid custom amount");
+      return;
+    }
+    if (extras.some((ex) => !ex.description.trim() || !(parseFloat(ex.amount) > 0))) {
+      setError("Every additional payment needs a description and a positive amount (or remove the empty row)");
       return;
     }
     setSaving(true);
@@ -273,6 +295,9 @@ function CollectPaymentModal({ open, onClose, onCollected }: {
         note: note || undefined,
         ...(amountMode === "CUSTOM" ? { customAmount: Math.round(parseFloat(customAmount) * 100) } : {}),
         ...(period === "MONTHLY" ? { months: Number(months) } : {}),
+        ...(extras.length > 0
+          ? { extras: extras.map((ex) => ({ description: ex.description.trim(), amount: Math.round(parseFloat(ex.amount) * 100) })) }
+          : {}),
       });
       const discountNote = receipt.discount > 0
         ? ` (${receipt.discountPercent}% yearly discount saved ${formatMoney(receipt.discount)})`
@@ -296,7 +321,7 @@ function CollectPaymentModal({ open, onClose, onCollected }: {
         {student ? (
           <div className="flex items-center justify-between rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm">
             <span className="font-medium text-emerald-900">
-              ✓ {student.firstName} {student.lastName} — {student.admissionNo} · {gradeLabel(student.gradeLevel)}
+              <Icon name="check" className="mr-1 inline h-4 w-4" />{student.firstName} {student.lastName} — {student.admissionNo} · {gradeLabel(student.gradeLevel)}
             </span>
             <button type="button" className="text-xs font-medium text-emerald-700 underline" onClick={() => setStudent(null)}>
               Change
@@ -365,6 +390,72 @@ function CollectPaymentModal({ open, onClose, onCollected }: {
             />
           </label>
         </fieldset>
+
+        <fieldset className="space-y-2 rounded-lg border border-slate-200 p-4">
+          <legend className="px-1 text-sm font-medium text-slate-700">Additional payments (optional)</legend>
+          <p className="text-xs text-slate-500">
+            Extra charges collected together with the fee — uniform, books, registration, trip…
+            Each appears as its own line on the invoice and receipt.
+          </p>
+          {extras.map((ex, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <Input
+                placeholder="Description, e.g. School uniform"
+                value={ex.description}
+                maxLength={200}
+                onChange={(e) => setExtra(i, { description: e.target.value })}
+              />
+              <Input
+                type="number" step="0.01" min="0.01" className="!w-32"
+                placeholder="0.00"
+                value={ex.amount}
+                onChange={(e) => setExtra(i, { amount: e.target.value })}
+              />
+              <button
+                type="button"
+                className="rounded p-1.5 text-slate-400 hover:bg-slate-100 hover:text-rose-600"
+                aria-label="Remove this additional payment"
+                onClick={() => setExtras((rows) => rows.filter((_, idx) => idx !== i))}
+              >
+                <Icon name="x" className="h-4 w-4" />
+              </button>
+            </div>
+          ))}
+          <Button
+            type="button"
+            variant="secondary"
+            className="!px-3 !py-1.5 text-xs"
+            onClick={() => setExtras((rows) => [...rows, { description: "", amount: "" }])}
+          >
+            + Add additional payment
+          </Button>
+        </fieldset>
+
+        {(student || extras.length > 0) && (
+          <div className="rounded-lg bg-slate-50 p-4 text-sm">
+            <div className="flex items-center justify-between text-slate-600">
+              <span>Fee amount{amountMode === "PRESET" ? " (preset)" : " (custom)"}</span>
+              <span className="tabular-nums">{formatMoney(baseAmount)}</span>
+            </div>
+            {extras.map((ex, i) => (
+              <div key={i} className="flex items-center justify-between text-slate-600">
+                <span className="truncate pr-4">{ex.description.trim() || `Additional payment ${i + 1}`}</span>
+                <span className="tabular-nums">
+                  {formatMoney(parseFloat(ex.amount) > 0 ? Math.round(parseFloat(ex.amount) * 100) : 0)}
+                </span>
+              </div>
+            ))}
+            <div className="mt-2 flex items-center justify-between border-t border-slate-200 pt-2 font-semibold text-slate-900">
+              <span>Total to collect</span>
+              <span className="tabular-nums">{formatMoney(grandTotal)}</span>
+            </div>
+            {period === "YEARLY" && amountMode === "PRESET" && (
+              <p className="mt-1 text-xs text-slate-400">
+                The configured yearly discount is applied to the fee amount when the payment is recorded.
+              </p>
+            )}
+          </div>
+        )}
 
         <div className="grid grid-cols-2 gap-4">
           <Field label="Method">
@@ -535,12 +626,12 @@ function TransactionsCard({ isSuperAdmin, refreshKey, onChanged }: {
             </div>
 
             <div className="rounded-lg border border-slate-200">
-              <table className="w-full text-sm">
+              <table className="w-full text-xs">
                 <tbody>
                   {detail.invoice.items.map((it) => (
                     <tr key={it.id} className="border-b border-slate-100 last:border-0">
-                      <td className="px-4 py-2 text-slate-600">{it.description}</td>
-                      <td className="px-4 py-2 text-right tabular-nums">{formatMoney(it.amount, detail.invoice.currency)}</td>
+                      <td className="px-3 py-1.5 text-slate-600">{it.description}</td>
+                      <td className="px-3 py-1.5 text-right tabular-nums">{formatMoney(it.amount, detail.invoice.currency)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -571,7 +662,7 @@ function TransactionsCard({ isSuperAdmin, refreshKey, onChanged }: {
                 <Button variant="danger" loading={refunding} onClick={() => void refund()}>Refund payment</Button>
               )}
               <Link href={`/finance/receipt/${detail.id}`}>
-                <Button variant="secondary">🖨 Print receipt</Button>
+                <Button variant="secondary"><Icon name="printer" className="h-4 w-4" /> Print receipt</Button>
               </Link>
               <Button variant="secondary" onClick={() => setDetail(null)}>Close</Button>
             </div>
@@ -712,7 +803,7 @@ export default function FinancePage() {
         subtitle="Billing, collections and online payments"
         actions={
           <div className="flex gap-2 print:hidden">
-            <Button variant="secondary" onClick={() => window.print()}>🖨 Print invoice report</Button>
+            <Button variant="secondary" onClick={() => window.print()}><Icon name="printer" className="h-4 w-4" /> Print invoice report</Button>
             <Button variant="secondary" onClick={() => setShowFees(true)}>Fee structures</Button>
             <Button onClick={() => setShowCollect(true)}>+ Collect payment</Button>
           </div>

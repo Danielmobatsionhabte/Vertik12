@@ -40,11 +40,11 @@ export function DataTable<T>({ columns, rows, keyFor, loading, emptyTitle = "Not
 
   return (
     <div className="overflow-x-auto">
-      <table className="w-full text-sm">
+      <table className="w-full text-xs">
         <thead>
-          <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-500">
+          <tr className="border-b border-slate-200 text-left text-[11px] uppercase tracking-wide text-slate-500">
             {columns.map((c) => (
-              <th key={c.header} className={cx("px-4 py-3 font-medium", c.align === "right" && "text-right", c.className)}>
+              <th key={c.header} className={cx("px-3 py-2 font-medium", c.align === "right" && "text-right", c.className)}>
                 {c.header}
               </th>
             ))}
@@ -58,7 +58,7 @@ export function DataTable<T>({ columns, rows, keyFor, loading, emptyTitle = "Not
               onClick={onRowClick ? () => onRowClick(row) : undefined}
             >
               {columns.map((c) => (
-                <td key={c.header} className={cx("px-4 py-3 text-slate-700", c.align === "right" && "text-right tabular-nums", c.className)}>
+                <td key={c.header} className={cx("px-3 py-2 text-slate-700", c.align === "right" && "text-right tabular-nums", c.className)}>
                   {c.cell(row)}
                 </td>
               ))}
@@ -74,7 +74,7 @@ export function DataTable<T>({ columns, rows, keyFor, loading, emptyTitle = "Not
 export function Pager({ page, totalPages, onPage }: { page: number; totalPages: number; onPage: (p: number) => void }) {
   if (totalPages <= 1) return null;
   return (
-    <div className="flex items-center justify-end gap-2 border-t border-slate-100 px-4 py-3 text-sm text-slate-600">
+    <div className="flex items-center justify-end gap-2 border-t border-slate-100 px-3 py-2 text-xs text-slate-600">
       <button
         className="rounded px-2 py-1 hover:bg-slate-100 disabled:opacity-40"
         disabled={page <= 1}

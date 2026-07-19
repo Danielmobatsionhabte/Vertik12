@@ -194,28 +194,28 @@ function GradingTab() {
             e.g. set A+ at ≥95 and A at ≥90, or remove A+ entirely.
           </p>
         </div>
-        <table className="w-full text-sm">
+        <table className="w-full text-xs">
           <thead>
-            <tr className="border-b border-slate-100 text-left text-xs uppercase tracking-wide text-slate-500">
-              <th className="px-6 py-2 font-medium">Letter</th>
-              <th className="px-4 py-2 font-medium">Minimum %</th>
-              <th className="px-4 py-2 font-medium">GPA points</th>
-              <th className="px-4 py-2" />
+            <tr className="border-b border-slate-100 text-left text-[11px] uppercase tracking-wide text-slate-500">
+              <th className="px-6 py-1.5 font-medium">Letter</th>
+              <th className="px-3 py-1.5 font-medium">Minimum %</th>
+              <th className="px-3 py-1.5 font-medium">GPA points</th>
+              <th className="px-3 py-1.5" />
             </tr>
           </thead>
           <tbody>
             {bands.map((b, i) => (
               <tr key={i} className="border-b border-slate-50">
-                <td className="px-6 py-1.5">
+                <td className="px-6 py-1">
                   <Input value={b.letter} onChange={(e) => update(i, "letter", e.target.value)} className="!w-20" maxLength={3} required />
                 </td>
-                <td className="px-4 py-1.5">
+                <td className="px-3 py-1">
                   <Input type="number" min={0} max={100} step="0.5" value={b.minPercent} onChange={(e) => update(i, "minPercent", e.target.value)} className="!w-28" required />
                 </td>
-                <td className="px-4 py-1.5">
+                <td className="px-3 py-1">
                   <Input type="number" min={0} max={5} step="0.1" value={b.points} onChange={(e) => update(i, "points", e.target.value)} className="!w-28" required />
                 </td>
-                <td className="px-4 py-1.5 text-right">
+                <td className="px-3 py-1 text-right">
                   <button type="button" className="text-xs text-rose-600 hover:underline"
                     onClick={() => setBands((bs) => bs?.filter((_, idx) => idx !== i) ?? null)}>
                     Remove

@@ -40,7 +40,7 @@ function StaffStatusModal({ staff, onClose, onSaved }: {
 
   const hint =
     status === "TERMINATED" || status === "RESIGNED"
-      ? "⚠ Their portal login is revoked and open sessions are signed out immediately."
+      ? "Their portal login is revoked and open sessions are signed out immediately."
       : status === "ACTIVE" && staff.status !== "ACTIVE"
         ? "Their portal login is restored."
         : status === "ON_LEAVE"

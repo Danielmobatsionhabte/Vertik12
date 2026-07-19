@@ -9,6 +9,7 @@ import { fileToPhoto, fileToAttachment } from "@/lib/files";
 import { humanize } from "@/lib/format";
 import { Button, Card, ErrorNote, Field, Input, PageHeader, Select } from "@/components/ui";
 import { WebcamCaptureModal } from "@/components/webcam-capture";
+import { Icon } from "@/components/icons";
 
 interface ClassOption {
   id: string;
@@ -259,13 +260,13 @@ export default function AdmitStudentPage() {
                   className="h-20 w-20 rounded-xl object-cover ring-2 ring-brand-200"
                 />
               ) : (
-                <span className="flex h-20 w-20 items-center justify-center rounded-xl bg-slate-100 text-2xl text-slate-400">📷</span>
+                <span className="flex h-20 w-20 items-center justify-center rounded-xl bg-slate-100 text-2xl text-slate-400"><Icon name="camera" className="h-8 w-8" /></span>
               )}
               <div className="space-y-1.5 text-sm">
                 <div className="flex flex-wrap items-center gap-2">
                   <Input type="file" accept="image/jpeg,image/png" capture="user" className="!w-auto" onChange={(e) => void pickPhoto(e)} />
                   <Button type="button" variant="secondary" className="!px-3 !py-1.5 text-xs" onClick={() => setWebcamFor("photo")}>
-                    📸 Use webcam
+                    <Icon name="camera" className="h-3.5 w-3.5" /> Use webcam
                   </Button>
                 </div>
                 {photo && (
@@ -382,7 +383,7 @@ export default function AdmitStudentPage() {
                   className="text-xs font-medium text-rose-600 hover:underline"
                   onClick={() => setDocRows((rows) => rows.filter((_, idx) => idx !== i))}
                 >
-                  ✕ Remove
+                  <Icon name="x" className="mr-0.5 inline h-3 w-3" />Remove
                 </button>
               </div>
               <div className="flex flex-wrap items-end gap-3">
@@ -397,7 +398,7 @@ export default function AdmitStudentPage() {
                 </Field>
                 {row.attachment ? (
                   <p className="flex items-center gap-2 pb-2 text-sm text-slate-700">
-                    📄 <span className="font-medium">{row.attachment.name}</span>
+                    <Icon name="file" className="h-4 w-4" /> <span className="font-medium">{row.attachment.name}</span>
                     <button type="button" className="text-xs text-rose-600 underline" onClick={() => setDocRow(i, { attachment: null })}>
                       change
                     </button>
@@ -407,7 +408,7 @@ export default function AdmitStudentPage() {
                     <Field label="Upload a file">
                       <Input type="file" accept={ATTACHMENT_ACCEPT} className="!w-auto" onChange={(e) => void pickDocFile(i, e)} />
                     </Field>
-                    <Button type="button" variant="secondary" onClick={() => setWebcamFor(i)}>📸 Webcam</Button>
+                    <Button type="button" variant="secondary" onClick={() => setWebcamFor(i)}><Icon name="camera" className="h-4 w-4" /> Webcam</Button>
                   </>
                 )}
               </div>

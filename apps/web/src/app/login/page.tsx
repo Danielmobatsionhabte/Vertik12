@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { BRAND, ROLE_HOME, type AuthResponse } from "@vertik12/shared";
 import { post, setSession, ApiClientError } from "@/lib/api";
 import { Button, Field, Input } from "@/components/ui";
+import { Icon } from "@/components/icons";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -23,8 +24,11 @@ export default function LoginPage() {
 
   useEffect(() => {
     initTheme(); // respect the saved light/dark choice
-    if (new URLSearchParams(window.location.search).get("reason") === "session-ended") {
+    const reason = new URLSearchParams(window.location.search).get("reason");
+    if (reason === "session-ended") {
       setNotice("You were signed out: your session ended or your access was changed by an administrator.");
+    } else if (reason === "idle") {
+      setNotice("You were signed out after 2 hours of inactivity. Please sign in again.");
     }
   }, []);
 
@@ -88,7 +92,7 @@ export default function LoginPage() {
 
             {lockedFor > 0 ? (
               <div className="rounded-xl border border-rose-200 bg-rose-50 p-5 text-center">
-                <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-rose-100 text-2xl">🔒</div>
+                <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-rose-100"><Icon name="lock" className="h-6 w-6 text-rose-600" /></div>
                 <p className="text-sm font-semibold text-rose-800">Sign-in temporarily locked</p>
                 <p className="mt-1 text-xs text-rose-700">{lockMessage}</p>
                 <p className="mt-3 font-mono text-2xl font-bold tabular-nums text-rose-900">{mm}:{ss}</p>

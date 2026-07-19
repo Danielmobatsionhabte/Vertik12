@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches-ignore: [main] # main runs the full deploy workflow instead
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npm run db:generate -w @vertik12/api
+
+      - name: Typecheck all workspaces
+        run: npm run typecheck
+
+      - name: Build web app (static export, like production)
+        run: npm run build -w @vertik12/web
+        env:
+          NEXT_OUTPUT: export
+          NEXT_PUBLIC_API_URL: https://example.invalid/api/v1
+
+      - name: Build API Lambda bundle
+        run: |
+          node apps/api/scripts/set-db-provider.mjs postgresql
+          npm run db:generate -w @vertik12/api
+          npm run build:lambda -w @vertik12/api

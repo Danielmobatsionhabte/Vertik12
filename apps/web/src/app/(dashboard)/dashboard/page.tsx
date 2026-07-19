@@ -5,6 +5,7 @@ import type { DashboardStats } from "@vertik12/shared";
 import { get, getSession } from "@/lib/api";
 import { formatMoney, formatDate, gradeLabel } from "@/lib/format";
 import { Badge, Card, PageHeader, Spinner, StatCard } from "@/components/ui";
+import { Icon } from "@/components/icons";
 
 export default function DashboardPage() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
@@ -55,7 +56,7 @@ export default function DashboardPage() {
           <div className="flex flex-wrap items-start justify-between gap-6">
             <div>
               <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-700">
-                <span aria-hidden>👀</span> Portal visitors
+                <Icon name="eye" className="h-4 w-4" /> Portal visitors
               </h2>
               <p className="mt-2 text-4xl font-bold tabular-nums text-gradient">{stats.visitors.today}</p>
               <p className="text-xs text-slate-400">unique users signed in today</p>

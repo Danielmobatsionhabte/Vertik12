@@ -1,4 +1,4 @@
-import type { CreatePayrollRunInput, UpsertSalaryStructureInput } from "@vertik12/shared";
+import type { CreatePayrollRunInput, PayrollReportQuery, UpdatePayslipInput, UpsertSalaryStructureInput } from "@vertik12/shared";
 import { prisma } from "../../lib/prisma";
 import { ApiError } from "../../lib/errors";
 
@@ -157,6 +157,125 @@ export async function setPayslipBonus(payslipId: string, bonus: number) {
     where: { id: payslipId },
     data: { bonus, gross, net: gross - payslip.totalDeductions },
   });
+}
+
+/**
+ * Admin edits a payslip's amounts while the run is still a DRAFT. Omitted
+ * fields keep their snapshot values; component lists are replaced wholesale
+ * and gross/net recompute so the payslip stays internally consistent.
+ */
+export async function updatePayslip(payslipId: string, input: UpdatePayslipInput) {
+  const payslip = await prisma.payslip.findUnique({ where: { id: payslipId }, include: { run: true } });
+  if (!payslip) throw ApiError.notFound("Payslip");
+  if (payslip.run.status !== "DRAFT") {
+    throw ApiError.badRequest("Payslips can only be edited while the payroll run is a draft");
+  }
+  const basicSalary = input.basicSalary ?? payslip.basicSalary;
+  const bonus = input.bonus ?? payslip.bonus;
+  const allowances = input.allowances ?? parseComponents(payslip.allowances);
+  const deductions = input.deductions ?? parseComponents(payslip.deductions);
+  const gross = basicSalary + sum(allowances) + bonus;
+  const totalDeductions = sum(deductions);
+  return prisma.payslip.update({
+    where: { id: payslipId },
+    data: {
+      basicSalary,
+      bonus,
+      allowances: JSON.stringify(allowances),
+      deductions: JSON.stringify(deductions),
+      gross,
+      totalDeductions,
+      net: gross - totalDeductions,
+    },
+  });
+}
+
+// ============================ report =============================
+
+/**
+ * Advanced payslip search + aggregate report (drives /payroll/report).
+ * Status, staff and amount filters push into the query; the inclusive
+ * YYYY-MM period bounds are applied after the fetch because a (year, month)
+ * tuple can't be range-compared in a single Prisma filter.
+ */
+export async function payrollReport(f: PayrollReportQuery) {
+  const slips = await prisma.payslip.findMany({
+    where: {
+      ...(f.runStatus ? { run: { status: f.runStatus } } : {}),
+      ...(f.payslipStatus ? { status: f.payslipStatus } : {}),
+      ...(f.minNet !== undefined || f.maxNet !== undefined
+        ? { net: { ...(f.minNet !== undefined ? { gte: f.minNet } : {}), ...(f.maxNet !== undefined ? { lte: f.maxNet } : {}) } }
+        : {}),
+      staff: {
+        ...(f.staffType ? { staffType: f.staffType } : {}),
+        ...(f.department ? { department: { contains: f.department } } : {}),
+        ...(f.search
+          ? {
+              OR: [
+                { staffNo: { contains: f.search } },
+                { designation: { contains: f.search } },
+                { user: { firstName: { contains: f.search } } },
+                { user: { lastName: { contains: f.search } } },
+              ],
+            }
+          : {}),
+      },
+    },
+    include: {
+      run: { select: { id: true, month: true, year: true, status: true } },
+      staff: {
+        select: {
+          staffNo: true,
+          designation: true,
+          department: true,
+          staffType: true,
+          user: { select: { firstName: true, lastName: true } },
+        },
+      },
+    },
+    orderBy: [{ run: { year: "desc" } }, { run: { month: "desc" } }, { staff: { staffNo: "asc" } }],
+  });
+
+  const bound = (ym?: string) => (ym ? Number(ym.slice(0, 4)) * 100 + Number(ym.slice(5, 7)) : null);
+  const fromKey = bound(f.from);
+  const toKey = bound(f.to);
+  const rows = slips
+    .filter((p) => {
+      const k = p.run.year * 100 + p.run.month;
+      return (fromKey === null || k >= fromKey) && (toKey === null || k <= toKey);
+    })
+    .map((p) => ({ ...p, allowances: parseComponents(p.allowances), deductions: parseComponents(p.deductions) }));
+
+  const groupBy = <K extends string | number>(keyOf: (r: (typeof rows)[number]) => K) => {
+    const acc = new Map<K, { payslips: number; gross: number; deductions: number; net: number }>();
+    for (const r of rows) {
+      const g = acc.get(keyOf(r)) ?? { payslips: 0, gross: 0, deductions: 0, net: 0 };
+      g.payslips += 1;
+      g.gross += r.gross;
+      g.deductions += r.totalDeductions;
+      g.net += r.net;
+      acc.set(keyOf(r), g);
+    }
+    return acc;
+  };
+
+  return {
+    rows,
+    totals: {
+      payslips: rows.length,
+      staff: new Set(rows.map((r) => r.staffId)).size,
+      gross: rows.reduce((s, r) => s + r.gross, 0),
+      bonus: rows.reduce((s, r) => s + r.bonus, 0),
+      deductions: rows.reduce((s, r) => s + r.totalDeductions, 0),
+      net: rows.reduce((s, r) => s + r.net, 0),
+    },
+    byMonth: [...groupBy((r) => r.run.year * 100 + r.run.month).entries()]
+      .sort((a, b) => b[0] - a[0])
+      .map(([k, v]) => ({ year: Math.floor(k / 100), month: k % 100, ...v })),
+    byDepartment: [...groupBy((r) => r.staff.department ?? "Unassigned").entries()]
+      .sort((a, b) => b[1].net - a[1].net)
+      .map(([department, v]) => ({ department, ...v })),
+  };
 }
 
 /** A staff member's own payslip history (also used on the staff profile). */

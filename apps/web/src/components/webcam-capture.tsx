@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button, Modal } from "./ui";
+import { Icon } from "@/components/icons";
 
 export interface CapturedImage {
   name: string;
@@ -15,7 +16,7 @@ export interface CapturedImage {
  * so it works on any laptop/desktop with a camera and on phones; requires
  * a secure context (https or localhost).
  *
- * Flow: live preview → 📸 Capture → review → Use photo / Retake.
+ * Flow: live preview → <Icon name="camera" className="h-4 w-4" /> Capture → review → Use photo / Retake.
  */
 export function WebcamCaptureModal({ title = "Take a photo", onCapture, onClose }: {
   title?: string;
@@ -111,10 +112,10 @@ export function WebcamCaptureModal({ title = "Take a photo", onCapture, onClose 
           {shot ? (
             <>
               <Button variant="secondary" onClick={() => void retake()}>↺ Retake</Button>
-              <Button onClick={usePhoto}>✓ Use photo</Button>
+              <Button onClick={usePhoto}><Icon name="check" className="h-4 w-4" /> Use photo</Button>
             </>
           ) : (
-            <Button onClick={capture} disabled={!ready || !!error}>📸 Capture</Button>
+            <Button onClick={capture} disabled={!ready || !!error}><Icon name="camera" className="h-4 w-4" /> Capture</Button>
           )}
         </div>
       </div>

@@ -10,6 +10,9 @@
 
 generator client {
   provider = "prisma-client-js"
+  // "native" for local dev; "rhel-openssl-3.0.x" is the AWS Lambda
+  // (Amazon Linux 2023) engine bundled by scripts/build-lambda.mjs.
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
 }
 
 datasource db {

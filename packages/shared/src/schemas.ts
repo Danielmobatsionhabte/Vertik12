@@ -376,6 +376,18 @@ export const collectPaymentSchema = z.object({
    * amount (cents) is billed instead of the fee-structure computation.
    */
   customAmount: money.refine((v) => v > 0, "Amount must be positive").optional(),
+  /**
+   * Additional one-off charges collected together with the fee (uniform,
+   * books, trip, registration…). Each becomes its own line item on the
+   * invoice/receipt and is added on top of the fee amount. Cents.
+   */
+  extras: z
+    .array(z.object({
+      description: safeText(200),
+      amount: money.refine((v) => v > 0, "Amount must be positive"),
+    }))
+    .max(10)
+    .optional(),
   /** Free-text note shown on the receipt / transaction detail. */
   note: safeText(500, 0).optional(),
 });
@@ -412,6 +424,43 @@ export const createPayrollRunSchema = z.object({
   notes: z.string().optional(),
 });
 export type CreatePayrollRunInput = z.infer<typeof createPayrollRunSchema>;
+
+/**
+ * Advanced payslip filter powering the payroll report. Period bounds are
+ * inclusive "YYYY-MM" keys (matching <input type="month">); every filter
+ * combines with AND. Amounts are integer cents like the rest of the API.
+ */
+const monthKey = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Use YYYY-MM");
+export const payrollReportQuerySchema = z.object({
+  from: monthKey.optional(),
+  to: monthKey.optional(),
+  /** Matches staff no, designation, first or last name. */
+  search: z.string().trim().min(1).max(100).optional(),
+  department: z.string().trim().min(1).max(100).optional(),
+  staffType: z.enum(["TEACHING", "NON_TEACHING"]).optional(),
+  runStatus: z.enum(["DRAFT", "APPROVED", "PAID"]).optional(),
+  payslipStatus: z.enum(["PENDING", "PAID"]).optional(),
+  minNet: z.coerce.number().int().nonnegative().optional(),
+  maxNet: z.coerce.number().int().nonnegative().optional(),
+});
+export type PayrollReportQuery = z.infer<typeof payrollReportQuerySchema>;
+
+/**
+ * Admin edits a payslip's amounts while its run is still a draft. Omitted
+ * fields keep their current value; component lists are replaced wholesale.
+ * Gross, total deductions and net always recompute server-side.
+ */
+export const updatePayslipSchema = z
+  .object({
+    basicSalary: money.optional(),
+    bonus: money.optional(),
+    allowances: z.array(salaryComponentSchema).optional(),
+    deductions: z.array(salaryComponentSchema).optional(),
+  })
+  .refine((v) => Object.values(v).some((field) => field !== undefined), {
+    message: "Provide at least one field to change",
+  });
+export type UpdatePayslipInput = z.infer<typeof updatePayslipSchema>;
 
 // ---------- announcements ----------
 export const createAnnouncementSchema = z.object({

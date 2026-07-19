@@ -3,6 +3,10 @@ node_modules/
 dist/
 build/
 coverage/
+out/
+dist-lambda/
+packaged.yaml
+*.tsbuildinfo
 
 # environment
 .env

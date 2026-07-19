@@ -98,7 +98,12 @@ export async function listPlans(
       ],
     });
   }
-  if (!isAdmin(actor.role)) {
+  if (actor.role === "REGISTRAR") {
+    // Registrars are read-only observers of the curriculum: they see every
+    // published plan (for the calendar/printout) but never drafts or
+    // pending submissions, and they cannot manage anything.
+    conditions.push({ status: "PUBLISHED" });
+  } else if (!isAdmin(actor.role)) {
     // Teachers only see plans for the subject × grade pairs THEY teach
     // (published ones), plus everything they authored themselves. Other
     // teachers' subjects are invisible to them.
@@ -254,15 +259,18 @@ export async function deletePlan(planId: string, actor: Actor) {
 export async function planAttachment(planId: string, actor: Actor) {
   const plan = await prisma.lessonPlan.findUnique({ where: { id: planId } });
   if (!plan) throw ApiError.notFound("Lesson plan");
-  // Readable by admins and the author; other teachers only when it is
-  // published AND belongs to a subject × grade pair they teach.
+  // Readable by admins and the author; registrars for any published plan;
+  // other teachers only when it is published AND belongs to a subject ×
+  // grade pair they teach.
   if (!isAdmin(actor.role) && plan.createdById !== actor.userId) {
     if (plan.status !== "PUBLISHED") {
       throw ApiError.forbidden("This lesson plan has not been published yet");
     }
-    const pairs = await teachingPairs(actor.userId);
-    if (!pairs.some((p) => p.subjectId === plan.subjectId && p.gradeLevel === plan.gradeLevel)) {
-      throw ApiError.forbidden("This lesson plan is not for a subject you teach");
+    if (actor.role !== "REGISTRAR") {
+      const pairs = await teachingPairs(actor.userId);
+      if (!pairs.some((p) => p.subjectId === plan.subjectId && p.gradeLevel === plan.gradeLevel)) {
+        throw ApiError.forbidden("This lesson plan is not for a subject you teach");
+      }
     }
   }
   if (!plan.attachmentRef) throw ApiError.notFound("Attachment");

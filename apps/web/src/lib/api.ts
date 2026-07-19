@@ -19,6 +19,33 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000/api/v1
 export const SESSION_STORAGE_KEY = "vertik12.session";
 const STORAGE_KEY = SESSION_STORAGE_KEY;
 
+// ---------- idle timeout ----------
+// The session must end after 2 hours without the user actually using the
+// app. The app shell records interactions via touchActivity(); the refresh
+// path below refuses to renew tokens past the limit (so the background
+// heartbeat cannot keep an abandoned session alive), and the API's refresh
+// token itself expires after the same 2 hours server-side.
+export const IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000;
+const ACTIVITY_KEY = "vertik12.lastActivity";
+
+/** Record that the user is actively using the app (shared across tabs). */
+export function touchActivity() {
+  if (typeof window === "undefined") return;
+  try { localStorage.setItem(ACTIVITY_KEY, String(Date.now())); } catch { /* storage full/blocked */ }
+}
+
+/** Milliseconds since the last recorded user interaction in any tab. */
+export function idleMs(): number {
+  if (typeof window === "undefined") return 0;
+  try {
+    const raw = localStorage.getItem(ACTIVITY_KEY);
+    if (!raw) return 0; // never recorded (fresh login) — not idle
+    return Date.now() - Number(raw);
+  } catch {
+    return 0;
+  }
+}
+
 export interface Session {
   accessToken: string;
   refreshToken: string;
@@ -76,6 +103,12 @@ async function tryRefresh(): Promise<Session | null> {
   refreshing ??= (async () => {
     const session = getSession();
     if (!session) return null;
+    // 2h without any user interaction ⇒ the session is over; don't renew it
+    // just because a background poll happened to fire.
+    if (idleMs() > IDLE_TIMEOUT_MS) {
+      setSession(null);
+      return null;
+    }
     try {
       const data = await rawRequest<AuthResponse>("/auth/refresh", {
         method: "POST",

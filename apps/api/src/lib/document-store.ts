@@ -8,7 +8,8 @@ import path from "node:path";
  *
  *   DOCUMENT_STORE=local     JSON files on disk (zero-config default for dev)
  *   DOCUMENT_STORE=mongodb   MongoDB      (MONGODB_URI, MONGODB_DB)
- *   DOCUMENT_STORE=dynamodb  AWS DynamoDB (DYNAMODB_TABLE, AWS_REGION + IAM creds)
+ *   DOCUMENT_STORE=dynamodb  AWS DynamoDB (DYNAMODB_TABLE, AWS_REGION + IAM creds;
+ *                            documents over ~350 KB spill to S3 via DOCUMENTS_BUCKET)
  *
  * SQL rows keep only a `contentRef` key. The mongodb / @aws-sdk packages are
  * loaded lazily so dev installs never pay for drivers they don't use.
@@ -78,10 +79,17 @@ class MongoDocumentStore implements DocumentStore {
 }
 
 // ---------- DynamoDB (single-table: pk = collection#key) ----------
+// DynamoDB caps items at 400 KB, but stored documents (photos, assignment
+// submissions) can be several MB of base64. Documents above SPILL_BYTES are
+// therefore written as JSON objects to S3 (DOCUMENTS_BUCKET) with a small
+// pointer item in DynamoDB; callers never see the difference.
 class DynamoDocumentStore implements DocumentStore {
   readonly name = "dynamodb";
   private clientPromise: Promise<any> | null = null;
+  private s3Promise: Promise<any> | null = null;
   private table = process.env.DYNAMODB_TABLE ?? "vertik12-documents";
+  private bucket = process.env.DOCUMENTS_BUCKET; // required for documents > SPILL_BYTES
+  private static readonly SPILL_BYTES = 350_000; // headroom under the 400 KB item limit
 
   private async client() {
     this.clientPromise ??= (async () => {
@@ -92,11 +100,32 @@ class DynamoDocumentStore implements DocumentStore {
     return this.clientPromise;
   }
 
+  private async s3() {
+    this.s3Promise ??= (async () => {
+      const { S3Client } = await import("@aws-sdk/client-s3" as string);
+      return new S3Client({});
+    })();
+    return this.s3Promise;
+  }
+
   async put(collection: string, doc: Record<string, unknown>): Promise<string> {
     const key = crypto.randomUUID();
     const { PutCommand } = await import("@aws-sdk/lib-dynamodb" as string);
     const client = await this.client();
-    await client.send(new PutCommand({ TableName: this.table, Item: { pk: `${collection}#${key}`, ...doc } }));
+    const json = JSON.stringify(doc);
+    if (Buffer.byteLength(json, "utf8") > DynamoDocumentStore.SPILL_BYTES) {
+      if (!this.bucket) {
+        throw new Error("Document exceeds the DynamoDB item size limit and DOCUMENTS_BUCKET is not configured");
+      }
+      const s3Key = `${collection}/${key}.json`;
+      const { PutObjectCommand } = await import("@aws-sdk/client-s3" as string);
+      await (await this.s3()).send(
+        new PutObjectCommand({ Bucket: this.bucket, Key: s3Key, Body: json, ContentType: "application/json" }),
+      );
+      await client.send(new PutCommand({ TableName: this.table, Item: { pk: `${collection}#${key}`, s3Key } }));
+    } else {
+      await client.send(new PutCommand({ TableName: this.table, Item: { pk: `${collection}#${key}`, ...doc } }));
+    }
     return key;
   }
 
@@ -104,7 +133,14 @@ class DynamoDocumentStore implements DocumentStore {
     const { GetCommand } = await import("@aws-sdk/lib-dynamodb" as string);
     const client = await this.client();
     const result = await client.send(new GetCommand({ TableName: this.table, Key: { pk: `${collection}#${key}` } }));
-    return (result.Item as Record<string, unknown>) ?? null;
+    const item = result.Item as Record<string, unknown> | undefined;
+    if (!item) return null;
+    if (typeof item.s3Key === "string" && this.bucket) {
+      const { GetObjectCommand } = await import("@aws-sdk/client-s3" as string);
+      const res = await (await this.s3()).send(new GetObjectCommand({ Bucket: this.bucket, Key: item.s3Key }));
+      return JSON.parse(await res.Body.transformToString()) as Record<string, unknown>;
+    }
+    return item;
   }
 }
 

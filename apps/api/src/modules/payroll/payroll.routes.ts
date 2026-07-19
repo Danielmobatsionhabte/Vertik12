@@ -1,7 +1,7 @@
 import { Router } from "express";
-import { createPayrollRunSchema, emailPayslipSchema, payslipBonusSchema, upsertSalaryStructureSchema } from "@vertik12/shared";
+import { createPayrollRunSchema, emailPayslipSchema, payrollReportQuerySchema, payslipBonusSchema, updatePayslipSchema, upsertSalaryStructureSchema } from "@vertik12/shared";
 import { authenticate, requireRoles } from "../../middleware/auth";
-import { validateBody } from "../../middleware/validate";
+import { parsedQuery, validateBody, validateQuery } from "../../middleware/validate";
 import { asyncHandler } from "../../middleware/error-handler";
 import { ApiError } from "../../lib/errors";
 import { sendMail } from "../../lib/mailer";
@@ -21,6 +21,12 @@ payrollRouter.get("/salaries", requireRoles("ADMIN", "ACCOUNTANT"),
 payrollRouter.put("/salaries", requireRoles("ADMIN"), validateBody(upsertSalaryStructureSchema),
   asyncHandler(async (req, res) => {
     res.json(ok(await payroll.upsertSalaryStructure(req.body), "Salary structure saved"));
+  }));
+
+// Advanced filter + aggregate report over all payslips (drives /payroll/report).
+payrollRouter.get("/report", requireRoles("ADMIN", "ACCOUNTANT"), validateQuery(payrollReportQuerySchema),
+  asyncHandler(async (req, res) => {
+    res.json(ok(await payroll.payrollReport(parsedQuery(req))));
   }));
 
 // Payroll runs ------------------------------------------------------------
@@ -59,6 +65,12 @@ payrollRouter.post("/runs/:id/pay", requireRoles("ADMIN"),
 payrollRouter.patch("/payslips/:id/bonus", requireRoles("ADMIN"), validateBody(payslipBonusSchema),
   asyncHandler(async (req, res) => {
     res.json(ok(await payroll.setPayslipBonus(req.params.id, req.body.bonus), "Bonus saved"));
+  }));
+
+// Admin edits a draft payslip's amounts (basic, allowances, deductions, bonus).
+payrollRouter.patch("/payslips/:id", requireRoles("ADMIN"), validateBody(updatePayslipSchema),
+  asyncHandler(async (req, res) => {
+    res.json(ok(await payroll.updatePayslip(req.params.id, req.body), "Payslip updated"));
   }));
 
 // Payslips ----------------------------------------------------------------

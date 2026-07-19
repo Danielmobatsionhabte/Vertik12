@@ -6,6 +6,7 @@ import { ATTENDANCE_STATUSES, type AttendanceStatus } from "@vertik12/shared";
 import { get, post, getSession } from "@/lib/api";
 import { fullName, localDateIso } from "@/lib/format";
 import { Button, Card, ErrorNote, Field, PageHeader, Select, Spinner, cx } from "@/components/ui";
+import { Icon } from "@/components/icons";
 
 interface RegisterRow {
   student: { id: string; admissionNo: string; firstName: string; lastName: string };
@@ -128,7 +129,7 @@ export default function AttendancePage() {
         subtitle="Attendance is recorded per subject/period; teachers mark the subjects they teach"
         actions={
           <Link href="/attendance/report">
-            <Button variant="secondary">📋 Attendance report</Button>
+            <Button variant="secondary"><Icon name="clipboard" className="h-4 w-4" /> Attendance report</Button>
           </Link>
         }
       />
@@ -157,7 +158,7 @@ export default function AttendancePage() {
           />
         </Field>
         <div className="ml-auto flex flex-wrap gap-2 print:hidden">
-          <Button variant="secondary" onClick={() => window.print()}>🖨 Print register</Button>
+          <Button variant="secondary" onClick={() => window.print()}><Icon name="printer" className="h-4 w-4" /> Print register</Button>
           <Button variant="secondary" onClick={() => markAll("PRESENT")}>All present</Button>
           <Button onClick={save} loading={saving}>Save register</Button>
         </div>

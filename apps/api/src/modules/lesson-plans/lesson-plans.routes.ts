@@ -17,7 +17,9 @@ import * as plans from "./lesson-plans.service";
  * of each grade × subject follow; teachers can contribute their own.
  */
 export const lessonPlansRouter = Router();
-lessonPlansRouter.use(authenticate, requireRoles("ADMIN", "TEACHER"));
+// Registrars get read access (list + calendar + attachments of published
+// plans); only admins and teachers ever create or modify plans.
+lessonPlansRouter.use(authenticate, requireRoles("ADMIN", "TEACHER", "REGISTRAR"));
 
 const actor = (req: { user?: { sub: string; role: string } }) => ({ userId: req.user!.sub, role: req.user!.role });
 
@@ -57,15 +59,15 @@ lessonPlansRouter.post("/:id/review", requireRoles("ADMIN"), validateBody(review
     res.json(ok(verdict, req.body.action === "APPROVE" ? "Lesson plan approved and published" : "Lesson plan sent back to the author"));
   }));
 
-lessonPlansRouter.post("/", validateBody(createLessonPlanSchema), asyncHandler(async (req, res) => {
+lessonPlansRouter.post("/", requireRoles("ADMIN", "TEACHER"), validateBody(createLessonPlanSchema), asyncHandler(async (req, res) => {
   res.status(201).json(ok(await plans.createPlan(req.body, actor(req)), "Lesson plan saved"));
 }));
 
-lessonPlansRouter.patch("/:id", validateBody(updateLessonPlanSchema), asyncHandler(async (req, res) => {
+lessonPlansRouter.patch("/:id", requireRoles("ADMIN", "TEACHER"), validateBody(updateLessonPlanSchema), asyncHandler(async (req, res) => {
   res.json(ok(await plans.updatePlan(req.params.id, req.body, actor(req)), "Lesson plan updated"));
 }));
 
-lessonPlansRouter.delete("/:id", asyncHandler(async (req, res) => {
+lessonPlansRouter.delete("/:id", requireRoles("ADMIN", "TEACHER"), asyncHandler(async (req, res) => {
   res.json(ok(await plans.deletePlan(req.params.id, actor(req)), "Lesson plan removed"));
 }));
 

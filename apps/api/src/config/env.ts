@@ -20,7 +20,9 @@ const envSchema = z.object({
   JWT_ACCESS_SECRET: z.string().default("dev-access-secret-change-me"),
   JWT_REFRESH_SECRET: z.string().default("dev-refresh-secret-change-me"),
   JWT_ACCESS_TTL: z.string().default("15m"),
-  JWT_REFRESH_TTL: z.string().default("7d"),
+  // Idle session lifetime — the refresh token rotates on activity, so this
+  // is how long a user can stay away before being signed out.
+  JWT_REFRESH_TTL: z.string().default("2h"),
   STRIPE_SECRET_KEY: z.string().optional(),
   STRIPE_WEBHOOK_SECRET: z.string().optional(),
   DEFAULT_CURRENCY: z.string().length(3).default("USD"),

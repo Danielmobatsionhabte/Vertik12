@@ -6,6 +6,8 @@ import { get, post, patch, getSession, ApiClientError } from "@/lib/api";
 import { formatMoney, monthLabel } from "@/lib/format";
 import { Badge, Button, Card, ErrorNote, Modal, PageHeader, Spinner } from "@/components/ui";
 import { DataTable } from "@/components/data-table";
+import { Icon } from "@/components/icons";
+import { EditPayslipModal, type EditablePayslip } from "./edit-payslip-modal";
 
 interface RunRow {
   id: string;
@@ -42,6 +44,7 @@ export default function PayrollPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [emailingId, setEmailingId] = useState<string | null>(null);
+  const [editing, setEditing] = useState<EditablePayslip | null>(null);
   const role = getSession()?.user.role;
   const isAdmin = role === "ADMIN" || role === "SUPER_ADMIN";
 
@@ -129,7 +132,14 @@ export default function PayrollPage() {
       <PageHeader
         title="Payroll"
         subtitle="Monthly runs snapshot each employee's salary structure into payslips: Draft → Approved → Paid"
-        actions={isAdmin ? <Button onClick={createRun} loading={busy}>+ Run payroll for this month</Button> : undefined}
+        actions={
+          <>
+            <Link href="/payroll/report">
+              <Button variant="secondary"><Icon name="clipboard" className="h-4 w-4" /> Report</Button>
+            </Link>
+            {isAdmin && <Button onClick={createRun} loading={busy}>+ Run payroll for this month</Button>}
+          </>
+        }
       />
       <ErrorNote message={error} />
       {notice && (
@@ -174,31 +184,31 @@ export default function PayrollPage() {
             </div>
 
             <div className="max-h-[50vh] overflow-y-auto rounded-lg border border-slate-200">
-              <table className="w-full text-sm">
-                <thead className="sticky top-0 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+              <table className="w-full text-xs">
+                <thead className="sticky top-0 bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500">
                   <tr>
-                    <th className="px-4 py-2 font-medium">Employee</th>
-                    <th className="px-4 py-2 text-right font-medium">Basic</th>
-                    <th className="px-4 py-2 text-right font-medium">Allowances</th>
-                    <th className="px-4 py-2 text-right font-medium">Bonus</th>
-                    <th className="px-4 py-2 text-right font-medium">Deductions</th>
-                    <th className="px-4 py-2 text-right font-medium">Net pay</th>
-                    <th className="px-4 py-2 font-medium">Status</th>
-                    <th className="px-4 py-2 font-medium">Paystub</th>
+                    <th className="px-3 py-1.5 font-medium">Employee</th>
+                    <th className="px-3 py-1.5 text-right font-medium">Basic</th>
+                    <th className="px-3 py-1.5 text-right font-medium">Allowances</th>
+                    <th className="px-3 py-1.5 text-right font-medium">Bonus</th>
+                    <th className="px-3 py-1.5 text-right font-medium">Deductions</th>
+                    <th className="px-3 py-1.5 text-right font-medium">Net pay</th>
+                    <th className="px-3 py-1.5 font-medium">Status</th>
+                    <th className="px-3 py-1.5 font-medium">Paystub</th>
                   </tr>
                 </thead>
                 <tbody>
                   {detail.payslips.map((p) => (
                     <tr key={p.id} className="border-t border-slate-100">
-                      <td className="px-4 py-2">
+                      <td className="px-3 py-1.5">
                         <p className="font-medium text-slate-800">{p.staff.user.firstName} {p.staff.user.lastName}</p>
                         <p className="text-xs text-slate-400">{p.staff.staffNo} · {p.staff.designation}</p>
                       </td>
-                      <td className="px-4 py-2 text-right tabular-nums">{formatMoney(p.basicSalary, p.currency)}</td>
-                      <td className="px-4 py-2 text-right tabular-nums" title={p.allowances.map((a) => `${a.name}: ${formatMoney(a.amount)}`).join("\n")}>
+                      <td className="px-3 py-1.5 text-right tabular-nums">{formatMoney(p.basicSalary, p.currency)}</td>
+                      <td className="px-3 py-1.5 text-right tabular-nums" title={p.allowances.map((a) => `${a.name}: ${formatMoney(a.amount)}`).join("\n")}>
                         +{formatMoney(p.gross - p.basicSalary - p.bonus, p.currency)}
                       </td>
-                      <td className="px-4 py-2 text-right tabular-nums">
+                      <td className="px-3 py-1.5 text-right tabular-nums">
                         {detail.status === "DRAFT" ? (
                           <button
                             className="font-medium text-brand-600 hover:underline"
@@ -213,19 +223,36 @@ export default function PayrollPage() {
                           "—"
                         )}
                       </td>
-                      <td className="px-4 py-2 text-right tabular-nums text-rose-600" title={p.deductions.map((d) => `${d.name}: ${formatMoney(d.amount)}`).join("\n")}>
+                      <td className="px-3 py-1.5 text-right tabular-nums text-rose-600" title={p.deductions.map((d) => `${d.name}: ${formatMoney(d.amount)}`).join("\n")}>
                         −{formatMoney(p.totalDeductions, p.currency)}
                       </td>
-                      <td className="px-4 py-2 text-right font-semibold tabular-nums text-emerald-700">{formatMoney(p.net, p.currency)}</td>
-                      <td className="px-4 py-2"><Badge>{p.status}</Badge></td>
-                      <td className="px-4 py-2">
+                      <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-emerald-700">{formatMoney(p.net, p.currency)}</td>
+                      <td className="px-3 py-1.5"><Badge>{p.status}</Badge></td>
+                      <td className="px-3 py-1.5">
                         <span className="flex items-center gap-2 whitespace-nowrap">
+                          {isAdmin && detail.status === "DRAFT" && (
+                            <button
+                              className="text-xs font-medium text-brand-600 hover:underline"
+                              title="Edit this payslip's amounts"
+                              onClick={() => setEditing({
+                                id: p.id,
+                                basicSalary: p.basicSalary,
+                                bonus: p.bonus,
+                                currency: p.currency,
+                                allowances: p.allowances,
+                                deductions: p.deductions,
+                                staffName: `${p.staff.user.firstName} ${p.staff.user.lastName}`,
+                              })}
+                            >
+                              <Icon name="edit" className="mr-0.5 inline h-3.5 w-3.5" />Edit
+                            </button>
+                          )}
                           <Link
                             href={`/payroll/payslip/${p.id}`}
                             className="text-xs font-medium text-brand-600 hover:underline"
                             title="Open the printable paystub"
                           >
-                            🖨 Print
+                            <Icon name="printer" className="mr-0.5 inline h-3.5 w-3.5" />Print
                           </Link>
                           {isAdmin && (
                             <button
@@ -234,7 +261,7 @@ export default function PayrollPage() {
                               onClick={() => void emailPayslip(p.id, `${p.staff.user.firstName} ${p.staff.user.lastName}`)}
                               title="Email the paystub to the employee"
                             >
-                              ✉️ Email
+                              <Icon name="mail" className="mr-0.5 inline h-3.5 w-3.5" />Email
                             </button>
                           )}
                         </span>
@@ -248,6 +275,15 @@ export default function PayrollPage() {
           </div>
         )}
       </Modal>
+
+      <EditPayslipModal
+        payslip={editing}
+        onClose={() => setEditing(null)}
+        onSaved={async () => {
+          if (detail) await openRun(detail.id);
+          await load();
+        }}
+      />
     </div>
   );
 }

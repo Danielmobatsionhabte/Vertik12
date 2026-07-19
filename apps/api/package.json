@@ -7,6 +7,7 @@
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
+    "build:lambda": "node scripts/build-lambda.mjs",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts",
@@ -23,6 +24,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.637.0",
+    "@aws-sdk/client-s3": "^3.637.0",
     "@aws-sdk/lib-dynamodb": "^3.637.0",
     "@prisma/client": "^5.19.1",
     "@types/nodemailer": "^8.0.1",
@@ -35,6 +37,7 @@
     "mongodb": "^6.8.0",
     "morgan": "^1.10.0",
     "nodemailer": "^9.0.3",
+    "serverless-http": "^3.2.0",
     "stripe": "^16.9.0",
     "zod": "^3.23.8"
   },
@@ -45,6 +48,7 @@
     "@types/jsonwebtoken": "^9.0.6",
     "@types/morgan": "^1.9.9",
     "@types/node": "^20.14.15",
+    "esbuild": "^0.23.1",
     "prisma": "^5.19.1",
     "tsx": "^4.17.0",
     "typescript": "^5.5.4"
