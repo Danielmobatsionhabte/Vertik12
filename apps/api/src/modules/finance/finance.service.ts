@@ -16,11 +16,45 @@ export const listFeeStructures = (academicYearId?: string) =>
     include: { academicYear: { select: { id: true, name: true, isActive: true } } },
   });
 
-/** Resolves an academic year into its [start, end] date range (for filters). */
-async function yearRange(academicYearId: string): Promise<{ gte: Date; lte: Date }> {
+/**
+ * Date window used to attribute invoices/payments to an academic year in the
+ * finance filters.
+ *
+ * A past/future year uses its exact calendar window. The ACTIVE year is
+ * deliberately open-ended around its start/end dates — bounded only by the
+ * neighbouring years so it never overlaps them — so that money taken before
+ * the official start (summer registration / advance fees) or after the end
+ * (late payments) still counts toward the current year. Without this, a
+ * payment recorded "today" that falls outside [start, end] silently drops out
+ * of the default (active-year) Transactions list, search results and the
+ * collected/outstanding totals, even though the collection succeeded.
+ */
+export async function yearFilterRange(
+  academicYearId: string,
+): Promise<{ gt?: Date; gte?: Date; lt?: Date; lte?: Date }> {
   const year = await prisma.academicYear.findUnique({ where: { id: academicYearId } });
   if (!year) throw ApiError.notFound("Academic year");
-  return { gte: year.startDate, lte: year.endDate };
+  if (!year.isActive) return { gte: year.startDate, lte: year.endDate };
+
+  // Active year: extend the window to the neighbouring years' boundaries so
+  // out-of-term collections stay attached to the current year without ever
+  // overlapping the previous/next year.
+  const [prev, next] = await Promise.all([
+    prisma.academicYear.findFirst({
+      where: { endDate: { lt: year.startDate } },
+      orderBy: { endDate: "desc" },
+      select: { endDate: true },
+    }),
+    prisma.academicYear.findFirst({
+      where: { startDate: { gt: year.endDate } },
+      orderBy: { startDate: "asc" },
+      select: { startDate: true },
+    }),
+  ]);
+  const range: { gt?: Date; lt?: Date } = {};
+  if (prev) range.gt = prev.endDate; // start just after the previous year ended
+  if (next) range.lt = next.startDate; // stop just before the next year begins
+  return range;
 }
 
 export const createFeeStructure = (input: {
@@ -39,6 +73,20 @@ export async function deactivateFeeStructure(id: string) {
 }
 
 // ============================== invoices ==============================
+
+/**
+ * The school's configured billing currency (Administration → School settings),
+ * falling back to the deployment default only if settings were never saved.
+ * Every invoice/receipt is stamped with this so all money displays follow the
+ * admin's choice rather than a hardcoded USD.
+ */
+async function schoolCurrency(): Promise<string> {
+  const settings = await prisma.schoolSettings.findUnique({
+    where: { id: "school" },
+    select: { currency: true },
+  });
+  return settings?.currency ?? env.DEFAULT_CURRENCY;
+}
 
 async function nextInvoiceNumber(tx: Prisma.TransactionClient): Promise<string> {
   const year = new Date().getFullYear();
@@ -68,7 +116,7 @@ export async function listInvoices(
 ) {
   // Year filter = invoices issued while that academic year was running, so
   // each year's billing stays retrievable after the school rolls over.
-  const issued = q.academicYearId ? await yearRange(q.academicYearId) : undefined;
+  const issued = q.academicYearId ? await yearFilterRange(q.academicYearId) : undefined;
   const where: Prisma.InvoiceWhereInput = {
     ...(q.status ? { status: q.status } : {}),
     ...(q.studentId ? { studentId: q.studentId } : {}),
@@ -115,6 +163,7 @@ export async function getInvoice(id: string) {
 }
 
 export async function createInvoice(input: CreateInvoiceInput) {
+  const currency = await schoolCurrency();
   return prisma.$transaction(async (tx) => {
     const student = await tx.student.findUnique({ where: { id: input.studentId } });
     if (!student) throw ApiError.notFound("Student");
@@ -122,7 +171,7 @@ export async function createInvoice(input: CreateInvoiceInput) {
       data: {
         number: await nextInvoiceNumber(tx),
         studentId: input.studentId,
-        currency: env.DEFAULT_CURRENCY,
+        currency,
         dueDate: input.dueDate,
         notes: input.notes,
         status: "ISSUED",
@@ -144,6 +193,7 @@ export async function bulkInvoice(input: { gradeLevel: string; feeStructureIds: 
   });
   if (studentsToBill.length === 0) throw ApiError.badRequest(`No active students in grade ${input.gradeLevel}`);
 
+  const currency = await schoolCurrency();
   const created = await prisma.$transaction(async (tx) => {
     let count = 0;
     for (const s of studentsToBill) {
@@ -151,7 +201,7 @@ export async function bulkInvoice(input: { gradeLevel: string; feeStructureIds: 
         data: {
           number: await nextInvoiceNumber(tx),
           studentId: s.id,
-          currency: env.DEFAULT_CURRENCY,
+          currency,
           dueDate: input.dueDate,
           status: "ISSUED",
           items: { create: fees.map((f) => ({ description: f.name, amount: f.amount, feeStructureId: f.id })) },
@@ -422,26 +472,30 @@ export async function collectPayment(input: CollectPaymentInput, recordedBy: str
 // ========================= transactions & refunds =========================
 
 /** Paginated payment history (the "Transactions" screen). */
-export async function listPayments(q: PaginationQuery & { status?: string; method?: string; academicYearId?: string }) {
+export async function listPayments(
+  q: PaginationQuery & { status?: string; method?: string; academicYearId?: string; currency?: string },
+) {
   // Year filter: payments taken during that academic year (fall back to the
   // creation date for pending ones, which have no paid date yet).
-  const range = q.academicYearId ? await yearRange(q.academicYearId) : undefined;
+  const range = q.academicYearId ? await yearFilterRange(q.academicYearId) : undefined;
+  // Currency filter and the text search both constrain the invoice relation —
+  // build them into ONE invoice condition so they don't clobber each other.
+  const invoiceFilter: Prisma.InvoiceWhereInput = {
+    ...(q.currency ? { currency: q.currency } : {}),
+    ...(q.search
+      ? {
+          OR: [
+            { number: { contains: q.search } },
+            { student: { is: { OR: [{ firstName: { contains: q.search } }, { lastName: { contains: q.search } }, { admissionNo: { contains: q.search } }] } } },
+          ],
+        }
+      : {}),
+  };
   const where: Prisma.PaymentWhereInput = {
     ...(q.status ? { status: q.status } : {}),
     ...(q.method ? { method: q.method } : {}),
     ...(range ? { OR: [{ paidAt: range }, { paidAt: null, createdAt: range }] } : {}),
-    ...(q.search
-      ? {
-          invoice: {
-            is: {
-              OR: [
-                { number: { contains: q.search } },
-                { student: { is: { OR: [{ firstName: { contains: q.search } }, { lastName: { contains: q.search } }, { admissionNo: { contains: q.search } }] } } },
-              ],
-            },
-          },
-        }
-      : {}),
+    ...(Object.keys(invoiceFilter).length > 0 ? { invoice: { is: invoiceFilter } } : {}),
   };
   const [items, total] = await Promise.all([
     prisma.payment.findMany({
@@ -529,12 +583,12 @@ export async function refundPayment(id: string, reason: string, refundedBy: stri
 export async function financeOverview(academicYearId?: string) {
   // Optional year scope: totals for the invoices issued during that year,
   // so the dashboard follows the year the viewer switches to.
-  const issued = academicYearId ? await yearRange(academicYearId) : undefined;
+  const issued = academicYearId ? await yearFilterRange(academicYearId) : undefined;
   const billable: Prisma.InvoiceWhereInput = {
     status: { notIn: ["VOID", "DRAFT"] },
     ...(issued ? { issueDate: issued } : {}),
   };
-  const [invoicedAgg, collectedAgg, overdueCount, recentPayments] = await Promise.all([
+  const [invoicedAgg, collectedAgg, overdueCount, recentPayments, currency] = await Promise.all([
     prisma.invoiceItem.aggregate({ _sum: { amount: true }, where: { invoice: billable } }),
     prisma.payment.aggregate({ _sum: { amount: true }, where: { status: "SUCCEEDED", invoice: billable } }),
     // Overdue = stored OVERDUE plus unpaid invoices whose due date has
@@ -554,15 +608,55 @@ export async function financeOverview(academicYearId?: string) {
       take: 15,
       include: { invoice: { include: { student: { select: { firstName: true, lastName: true } } } } },
     }),
+    schoolCurrency(),
   ]);
   const invoiced = invoicedAgg._sum.amount ?? 0;
   const collected = collectedAgg._sum.amount ?? 0;
+
+  // Per-currency breakdown: money in different currencies must never be summed
+  // into one figure (10000 JPY + 100 USD is not 10100 of anything). Distinct
+  // currencies are few, so a small aggregate per currency stays cheap and
+  // avoids materialising every payment. When the school uses a single currency
+  // this is just one row equal to the totals above.
+  const distinctCurrencies = await prisma.invoice.findMany({
+    where: billable,
+    select: { currency: true },
+    distinct: ["currency"],
+  });
+  const byCurrency = (
+    await Promise.all(
+      distinctCurrencies.map(async ({ currency: cur }) => {
+        const scoped: Prisma.InvoiceWhereInput = { ...billable, currency: cur };
+        const [invAgg, colAgg, payments] = await Promise.all([
+          prisma.invoiceItem.aggregate({ _sum: { amount: true }, where: { invoice: scoped } }),
+          prisma.payment.aggregate({ _sum: { amount: true }, where: { status: "SUCCEEDED", invoice: scoped } }),
+          prisma.payment.count({ where: { status: "SUCCEEDED", invoice: scoped } }),
+        ]);
+        const curInvoiced = invAgg._sum.amount ?? 0;
+        const curCollected = colAgg._sum.amount ?? 0;
+        return {
+          currency: cur,
+          invoiced: curInvoiced,
+          collected: curCollected,
+          outstanding: curInvoiced - curCollected,
+          payments,
+        };
+      }),
+    )
+  ).sort((a, b) => b.collected - a.collected);
+
   return {
     invoiced,
     collected,
     outstanding: invoiced - collected,
     overdueCount,
     recentPayments,
+    // Admin-configured billing currency, so the dashboard cards and the
+    // collection UI format money the same way invoices are stamped.
+    currency,
+    // Collected/invoiced/outstanding split by the currency each invoice was
+    // billed in — the UI lists these instead of a mixed-currency total.
+    byCurrency,
   };
 }
 

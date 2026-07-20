@@ -127,6 +127,7 @@ const paymentListQuery = paginationSchema.extend({
   status: z.enum(PAYMENT_STATUSES).optional(),
   method: z.enum(PAYMENT_METHODS).optional(),
   academicYearId: z.string().optional(), // payments taken during that year
+  currency: z.string().length(3).optional(), // list only one currency's payments
 });
 
 financeRouter.get("/payments", requireRoles("ADMIN", "ACCOUNTANT", "REGISTRAR"), validateQuery(paymentListQuery),

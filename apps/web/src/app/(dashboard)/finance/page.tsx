@@ -40,7 +40,7 @@ interface YearOption { id: string; name: string; isActive: boolean }
  * (monthly, termly, annual). The registrar's "Collect payment" and bulk
  * invoicing pull from these presets — amounts vary by grade.
  */
-function FeeStructuresModal({ canManage, onClose }: { canManage: boolean; onClose: () => void }) {
+function FeeStructuresModal({ canManage, currency, onClose }: { canManage: boolean; currency: string; onClose: () => void }) {
   const grades = useGrades();
   const [fees, setFees] = useState<FeeStructureRow[] | null>(null);
   const [years, setYears] = useState<YearOption[]>([]);
@@ -122,7 +122,7 @@ function FeeStructuresModal({ canManage, onClose }: { canManage: boolean; onClos
                 : <Badge tone="gray">All grades</Badge>,
             },
             { header: "Frequency", cell: (f) => humanize(f.frequency) },
-            { header: "Amount", align: "right", cell: (f) => <span className="font-medium">{formatMoney(f.amount)}</span> },
+            { header: "Amount", align: "right", cell: (f) => <span className="font-medium">{formatMoney(f.amount, currency)}</span> },
             ...(canManage
               ? [{
                   header: "",
@@ -147,7 +147,7 @@ function FeeStructuresModal({ canManage, onClose }: { canManage: boolean; onClos
                   {grades.map((g) => <option key={g.code} value={g.code}>{g.name}</option>)}
                 </Select>
               </Field>
-              <Field label="Amount (USD)"><Input type="number" step="0.01" min="0.01" value={form.amount} onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))} required /></Field>
+              <Field label={`Amount (${currency})`}><Input type="number" step="0.01" min="0.01" value={form.amount} onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))} required /></Field>
               <Field label="Frequency">
                 <Select value={form.frequency} onChange={(e) => setForm((f) => ({ ...f, frequency: e.target.value }))}>
                   {FEE_FREQUENCIES.map((fr) => <option key={fr} value={fr}>{humanize(fr)}</option>)}
@@ -208,8 +208,9 @@ interface CollectReceipt {
  * automatically), take the preset amount for the student's grade or type a
  * custom one, optionally add a note — invoice + payment are created together.
  */
-function CollectPaymentModal({ open, onClose, onCollected }: {
+function CollectPaymentModal({ open, currency, onClose, onCollected }: {
   open: boolean;
+  currency: string;
   onClose: () => void;
   onCollected: (message: string, receipt: CollectReceipt) => void;
 }) {
@@ -315,9 +316,9 @@ function CollectPaymentModal({ open, onClose, onCollected }: {
           : {}),
       });
       const discountNote = receipt.discount > 0
-        ? ` (${receipt.discountPercent}% yearly discount saved ${formatMoney(receipt.discount)})`
+        ? ` (${receipt.discountPercent}% yearly discount saved ${formatMoney(receipt.discount, currency)})`
         : "";
-      onCollected(`Collected ${formatMoney(receipt.total)} from ${receipt.student} — receipt ${receipt.number}${discountNote}.`, receipt);
+      onCollected(`Collected ${formatMoney(receipt.total, currency)} from ${receipt.student} — receipt ${receipt.number}${discountNote}.`, receipt);
       reset();
     } catch (err) {
       setError(err instanceof ApiClientError ? err.message : "Collection failed");
@@ -388,7 +389,7 @@ function CollectPaymentModal({ open, onClose, onCollected }: {
               {student && (
                 <span className="block text-xs text-slate-500">
                   {preset !== null
-                    ? <>{formatMoney(preset)}{period === "YEARLY" ? " before the yearly discount" : ""} for {gradeLabel(student.gradeLevel)}</>
+                    ? <>{formatMoney(preset, currency)}{period === "YEARLY" ? " before the yearly discount" : ""} for {gradeLabel(student.gradeLevel)}</>
                     : `No preset is configured for ${gradeLabel(student.gradeLevel)} — use a custom amount`}
                 </span>
               )}
@@ -396,7 +397,7 @@ function CollectPaymentModal({ open, onClose, onCollected }: {
           </label>
           <label className="flex items-center gap-2 text-sm text-slate-700">
             <input type="radio" checked={amountMode === "CUSTOM"} onChange={() => setAmountMode("CUSTOM")} />
-            Custom amount (USD)
+            Custom amount ({currency})
             <Input
               type="number" step="0.01" min="0.01" className="!w-36"
               value={customAmount}
@@ -450,19 +451,19 @@ function CollectPaymentModal({ open, onClose, onCollected }: {
           <div className="rounded-lg bg-slate-50 p-4 text-sm">
             <div className="flex items-center justify-between text-slate-600">
               <span>Fee amount{amountMode === "PRESET" ? " (preset)" : " (custom)"}</span>
-              <span className="tabular-nums">{formatMoney(baseAmount)}</span>
+              <span className="tabular-nums">{formatMoney(baseAmount, currency)}</span>
             </div>
             {extras.map((ex, i) => (
               <div key={i} className="flex items-center justify-between text-slate-600">
                 <span className="truncate pr-4">{ex.description.trim() || `Additional payment ${i + 1}`}</span>
                 <span className="tabular-nums">
-                  {formatMoney(parseFloat(ex.amount) > 0 ? Math.round(parseFloat(ex.amount) * 100) : 0)}
+                  {formatMoney(parseFloat(ex.amount) > 0 ? Math.round(parseFloat(ex.amount) * 100) : 0, currency)}
                 </span>
               </div>
             ))}
             <div className="mt-2 flex items-center justify-between border-t border-slate-200 pt-2 font-semibold text-slate-900">
               <span>Total to collect</span>
-              <span className="tabular-nums">{formatMoney(grandTotal)}</span>
+              <span className="tabular-nums">{formatMoney(grandTotal, currency)}</span>
             </div>
             {period === "YEARLY" && amountMode === "PRESET" && (
               <p className="mt-1 text-xs text-slate-400">
@@ -530,16 +531,19 @@ interface PaymentDetail extends PaymentRow {
 }
 
 /** Every processed payment; click one for the full detail + printable receipt. */
-function TransactionsCard({ isSuperAdmin, refreshKey, academicYearId, onChanged }: {
+function TransactionsCard({ isSuperAdmin, refreshKey, academicYearId, currencies, onChanged }: {
   isSuperAdmin: boolean;
   refreshKey: number;
   /** Follows the page's year filter so past years' takings stay browsable. */
   academicYearId: string;
+  /** Billing currencies present in scope — drives the "separate by currency" filter. */
+  currencies: string[];
   onChanged: () => void;
 }) {
   const [data, setData] = useState<Paginated<PaymentRow> | null>(null);
   const [page, setPage] = useState(1);
   const [status, setStatus] = useState("");
+  const [currency, setCurrency] = useState("");
   const [search, setSearch] = useState("");
   const [detail, setDetail] = useState<PaymentDetail | null>(null);
   const [refunding, setRefunding] = useState(false);
@@ -548,10 +552,11 @@ function TransactionsCard({ isSuperAdmin, refreshKey, academicYearId, onChanged 
   const load = useCallback(() => {
     const params = new URLSearchParams({ page: String(page), pageSize: "10" });
     if (status) params.set("status", status);
+    if (currency) params.set("currency", currency);
     if (search) params.set("search", search);
     if (academicYearId) params.set("academicYearId", academicYearId);
     return get<Paginated<PaymentRow>>(`/finance/payments?${params}`).then(setData);
-  }, [page, status, search, academicYearId]);
+  }, [page, status, currency, search, academicYearId]);
 
   useEffect(() => {
     const t = setTimeout(() => void load(), search ? 300 : 0);
@@ -595,6 +600,12 @@ function TransactionsCard({ isSuperAdmin, refreshKey, academicYearId, onChanged 
           value={search}
           onChange={(e) => { setSearch(e.target.value); setPage(1); }}
         />
+        {currencies.length > 1 && (
+          <Select className="max-w-[150px]" value={currency} onChange={(e) => { setCurrency(e.target.value); setPage(1); }} title="Show only payments collected in this currency">
+            <option value="">All currencies</option>
+            {currencies.map((c) => <option key={c} value={c}>{c}</option>)}
+          </Select>
+        )}
         <Select className="max-w-[170px]" value={status} onChange={(e) => { setStatus(e.target.value); setPage(1); }}>
           <option value="">All statuses</option>
           {PAYMENT_STATUSES.map((s) => <option key={s} value={s}>{humanize(s)}</option>)}
@@ -611,6 +622,7 @@ function TransactionsCard({ isSuperAdmin, refreshKey, academicYearId, onChanged 
           { header: "Invoice", cell: (p) => <span className="font-mono text-xs">{p.invoice.number}</span> },
           { header: "Student", cell: (p) => <span className="font-medium text-slate-900">{fullName(p.invoice.student)}</span> },
           { header: "Method", cell: (p) => humanize(p.method) },
+          { header: "Currency", cell: (p) => <Badge tone="gray">{p.invoice.currency}</Badge> },
           { header: "Amount", align: "right", cell: (p) => <span className="font-medium">{formatMoney(p.amount, p.invoice.currency)}</span> },
           { header: "Status", cell: (p) => <Badge>{p.status}</Badge> },
           {
@@ -696,6 +708,10 @@ interface Overview {
   collected: number;
   outstanding: number;
   overdueCount: number;
+  /** Admin-configured billing currency — drives every money display here. */
+  currency: string;
+  /** Invoiced/collected/outstanding split per billing currency (highest collected first). */
+  byCurrency: Array<{ currency: string; invoiced: number; collected: number; outstanding: number; payments: number }>;
   recentPayments: Array<{ id: string; amount: number; method: string; paidAt: string; invoice: { number: string; student: { firstName: string; lastName: string } } }>;
 }
 
@@ -846,14 +862,50 @@ export default function FinancePage() {
         }
       />
 
-      {overview && (
-        <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <StatCard label="Total invoiced" value={formatMoney(overview.invoiced)} />
-          <StatCard label="Collected" value={formatMoney(overview.collected)} />
-          <StatCard label="Outstanding" value={formatMoney(overview.outstanding)} />
+      {overview && (overview.byCurrency.length > 1 ? (
+        // Multiple billing currencies: never show a mixed-currency total —
+        // list collected/invoiced/outstanding per currency instead.
+        <div className="mb-6 grid gap-4 lg:grid-cols-3">
+          <Card className="p-0 lg:col-span-2">
+            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3">
+              <h2 className="text-sm font-semibold text-slate-700">Collected by currency</h2>
+              <span className="text-xs text-slate-400">{overview.byCurrency.length} currencies</span>
+            </div>
+            <div className="table-scroll">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-100 text-left text-xs uppercase tracking-wide text-slate-400">
+                    <th className="px-5 py-2 font-medium">Currency</th>
+                    <th className="px-5 py-2 text-right font-medium">Invoiced</th>
+                    <th className="px-5 py-2 text-right font-medium">Collected</th>
+                    <th className="px-5 py-2 text-right font-medium">Outstanding</th>
+                    <th className="px-5 py-2 text-right font-medium">Payments</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {overview.byCurrency.map((c) => (
+                    <tr key={c.currency} className="border-b border-slate-50 last:border-0">
+                      <td className="px-5 py-2 font-semibold text-slate-800">{c.currency}</td>
+                      <td className="px-5 py-2 text-right tabular-nums">{formatMoney(c.invoiced, c.currency)}</td>
+                      <td className="px-5 py-2 text-right font-semibold tabular-nums text-emerald-600">{formatMoney(c.collected, c.currency)}</td>
+                      <td className="px-5 py-2 text-right tabular-nums text-rose-600">{formatMoney(c.outstanding, c.currency)}</td>
+                      <td className="px-5 py-2 text-right tabular-nums text-slate-500">{c.payments}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
           <StatCard label="Overdue invoices" value={overview.overdueCount} />
         </div>
-      )}
+      ) : (
+        <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <StatCard label="Total invoiced" value={formatMoney(overview.invoiced, overview.currency)} />
+          <StatCard label="Collected" value={formatMoney(overview.collected, overview.currency)} />
+          <StatCard label="Outstanding" value={formatMoney(overview.outstanding, overview.currency)} />
+          <StatCard label="Overdue invoices" value={overview.overdueCount} />
+        </div>
+      ))}
 
       {notice && (
         <div className="mb-4 rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800">
@@ -926,18 +978,21 @@ export default function FinancePage() {
         isSuperAdmin={role === "SUPER_ADMIN"}
         refreshKey={txRefresh}
         academicYearId={yearFilter}
+        currencies={overview?.byCurrency.map((c) => c.currency) ?? []}
         onChanged={() => void load()}
       />
 
       {showFees && (
         <FeeStructuresModal
           canManage={canManageFees}
+          currency={overview?.currency ?? "USD"}
           onClose={() => setShowFees(false)}
         />
       )}
 
       <CollectPaymentModal
         open={showCollect}
+        currency={overview?.currency ?? "USD"}
         onClose={() => setShowCollect(false)}
         onCollected={(msg, receipt) => {
           setNotice(msg);

@@ -42,7 +42,19 @@ interface StudentProfile {
   guardians: Array<{ relation: string; isPrimary: boolean; guardian: { id: string; firstName: string; lastName: string; phone: string; email?: string | null; userId?: string | null } }>;
   enrollments: Array<{ id: string; classRoom: { name: string }; academicYear: { name: string }; status: string }>;
   invoices: Array<{ id: string; number: string; status: string; dueDate: string; items: Array<{ amount: number }> }> | null;
+  /** Every payment taken against this student's invoices for the viewed year. */
+  transactions: Array<{
+    id: string;
+    amount: number;
+    method: string;
+    status: string;
+    paidAt: string | null;
+    createdAt: string;
+    invoice: { id: string; number: string; currency: string };
+  }> | null;
   examResults: Array<{ id: string; marks: number; maxMarks: number; grade: string; subject: { name: string }; exam: { name: string; term: { name: string } } }> | null;
+  /** The school's admin-configured billing currency — every money value uses it. */
+  currency: string;
   /** The academic year the invoices/summary cover (defaults to the active year). */
   financeYear: { id: string; name: string; isActive: boolean } | null;
 }
@@ -208,9 +220,9 @@ function StudentProfileView({ id }: { id: string }) {
         <StatCard label="Attendance rate" value={student.attendanceRate === null ? "—" : `${student.attendanceRate}%`} />
         {student.financeSummary && (
           <>
-            <StatCard label="Invoiced" value={formatMoney(student.financeSummary.invoiced)} detail={student.financeYear?.name ?? "all years"} />
-            <StatCard label="Paid" value={formatMoney(student.financeSummary.paid)} detail={student.financeYear?.name ?? "all years"} />
-            <StatCard label="Outstanding" value={formatMoney(student.financeSummary.outstanding)} detail={student.financeYear?.name ?? "all years"} />
+            <StatCard label="Invoiced" value={formatMoney(student.financeSummary.invoiced, student.currency)} detail={student.financeYear?.name ?? "all years"} />
+            <StatCard label="Paid" value={formatMoney(student.financeSummary.paid, student.currency)} detail={student.financeYear?.name ?? "all years"} />
+            <StatCard label="Outstanding" value={formatMoney(student.financeSummary.outstanding, student.currency)} detail={student.financeYear?.name ?? "all years"} />
           </>
         )}
       </div>
@@ -244,8 +256,30 @@ function StudentProfileView({ id }: { id: string }) {
                 columns={[
                   { header: "Number", cell: (i) => <span className="font-mono text-xs">{i.number}</span> },
                   { header: "Due", cell: (i) => formatDate(i.dueDate) },
-                  { header: "Amount", align: "right", cell: (i) => formatMoney(i.items.reduce((s, it) => s + it.amount, 0)) },
+                  { header: "Amount", align: "right", cell: (i) => formatMoney(i.items.reduce((s, it) => s + it.amount, 0), student.currency) },
                   { header: "Status", cell: (i) => <Badge>{i.status}</Badge> },
+                ]}
+              />
+            </Card>
+          )}
+
+          {/* Payments taken against this student — a collection shows here the
+              moment it is recorded, tied to this student's personal record. */}
+          {student.transactions && (
+            <Card>
+              <h2 className="border-b border-slate-100 px-6 py-3 text-sm font-semibold text-slate-700">
+                Transactions{student.financeYear ? ` — ${student.financeYear.name}` : ""}
+              </h2>
+              <DataTable
+                rows={student.transactions}
+                keyFor={(t) => t.id}
+                emptyTitle={`No payments${student.financeYear ? ` in ${student.financeYear.name}` : ""}`}
+                columns={[
+                  { header: "Date", cell: (t) => formatDate(t.paidAt ?? t.createdAt) },
+                  { header: "Invoice", cell: (t) => <span className="font-mono text-xs">{t.invoice.number}</span> },
+                  { header: "Method", cell: (t) => humanize(t.method) },
+                  { header: "Amount", align: "right", cell: (t) => <span className="font-medium text-emerald-600">{formatMoney(t.amount, t.invoice.currency || student.currency)}</span> },
+                  { header: "Status", cell: (t) => <Badge>{t.status}</Badge> },
                 ]}
               />
             </Card>

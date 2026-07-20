@@ -8,6 +8,7 @@ import { sendMail } from "../../lib/mailer";
 import { parentPortalEmail, studentWelcomeEmail } from "../../lib/email-templates";
 import { paginate, toSkipTake } from "../../lib/pagination";
 import { assertGradeExists } from "../academics/academics.service";
+import { yearFilterRange } from "../finance/finance.service";
 import { documentStore } from "../../lib/document-store";
 
 const PHOTOS = "student-photos"; // document-store collection
@@ -153,7 +154,11 @@ export async function getStudent(id: string, viewerRole: string, academicYearId?
     ? await prisma.academicYear.findUnique({ where: { id: academicYearId } })
     : await prisma.academicYear.findFirst({ where: { isActive: true } });
   if (academicYearId && !financeYear) throw ApiError.notFound("Academic year");
-  const issued = financeYear ? { gte: financeYear.startDate, lte: financeYear.endDate } : undefined;
+  // Same window rule as the finance module: the active year is open-ended
+  // around its term dates so a payment collected out of term (e.g. summer
+  // registration) still shows on the profile — otherwise a just-collected
+  // invoice would be missing from this student's Invoices/Transactions.
+  const issued = financeYear ? await yearFilterRange(financeYear.id) : undefined;
 
   const student = await prisma.student.findUnique({
     where: { id },
@@ -183,12 +188,33 @@ export async function getStudent(id: string, viewerRole: string, academicYearId?
   });
   if (!student) throw ApiError.notFound("Student");
 
-  const [totalDays, presentDays] = await Promise.all([
+  const [totalDays, presentDays, settings] = await Promise.all([
     prisma.attendanceRecord.count({ where: { studentId: id } }),
     prisma.attendanceRecord.count({ where: { studentId: id, status: { in: ["PRESENT", "LATE"] } } }),
+    prisma.schoolSettings.findUnique({ where: { id: "school" }, select: { currency: true } }),
   ]);
 
-  const invoices = (student as unknown as { invoices?: Array<{ status: string; items: { amount: number }[]; payments: { status: string; amount: number }[] }> }).invoices;
+  const invoices = (student as unknown as {
+    invoices?: Array<{
+      id: string;
+      number: string;
+      currency: string;
+      status: string;
+      issueDate: Date;
+      items: { amount: number }[];
+      payments: Array<{
+        id: string;
+        amount: number;
+        method: string;
+        status: string;
+        provider: string;
+        providerRef: string | null;
+        note: string | null;
+        paidAt: Date | null;
+        createdAt: Date;
+      }>;
+    }>;
+  }).invoices;
   const invoiced = (invoices ?? [])
     .filter((i) => i.status !== "VOID")
     .reduce((sum, i) => sum + i.items.reduce((s, it) => s + it.amount, 0), 0);
@@ -197,12 +223,41 @@ export async function getStudent(id: string, viewerRole: string, academicYearId?
     .filter((p) => p.status === "SUCCEEDED")
     .reduce((sum, p) => sum + p.amount, 0);
 
+  // Flat transaction history for this student (every payment across their
+  // invoices for the viewed year), newest first — drives the profile's
+  // Transactions card so a collection is visible against the student at once.
+  const transactions = canSeeFinance
+    ? (invoices ?? [])
+        .flatMap((inv) =>
+          inv.payments.map((p) => ({
+            id: p.id,
+            amount: p.amount,
+            method: p.method,
+            status: p.status,
+            provider: p.provider,
+            providerRef: p.providerRef,
+            note: p.note,
+            paidAt: p.paidAt,
+            createdAt: p.createdAt,
+            invoice: { id: inv.id, number: inv.number, currency: inv.currency },
+          })),
+        )
+        .sort(
+          (a, b) =>
+            new Date(b.paidAt ?? b.createdAt).getTime() - new Date(a.paidAt ?? a.createdAt).getTime(),
+        )
+    : null;
+
   return {
     ...student,
     invoices: invoices ?? null,
+    transactions,
     examResults: (student as { examResults?: unknown[] }).examResults ?? null,
     attendanceRate: totalDays === 0 ? null : Math.round((presentDays / totalDays) * 1000) / 10,
     financeSummary: canSeeFinance ? { invoiced, paid, outstanding: invoiced - paid } : null,
+    // The school's configured billing currency, so every money value on the
+    // profile follows Administration → School settings rather than a default.
+    currency: settings?.currency ?? "USD",
     // Which year the invoices/summary cover, so the UI can label and switch it.
     financeYear: financeYear
       ? { id: financeYear.id, name: financeYear.name, isActive: financeYear.isActive }
