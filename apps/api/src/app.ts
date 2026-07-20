@@ -1,4 +1,5 @@
 import express from "express";
+import compression from "compression";
 import cors from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
@@ -25,7 +26,15 @@ import { auditLogger } from "./middleware/audit";
 export function createApp() {
   const app = express();
 
+  // Behind CloudFront/ALB/API Gateway: resolve the real client IP from
+  // X-Forwarded-For (visitor log, audit trail, rate limiting).
+  app.set("trust proxy", true);
+
   app.use(helmet());
+  // Gzip JSON responses (big report/list payloads shrink ~5-10×). Skipped on
+  // Lambda, where CloudFront compresses at the edge and API Gateway would
+  // need binary-media handling for compressed bodies.
+  if (!process.env.LAMBDA_TASK_ROOT) app.use(compression());
   app.use(cors({ origin: env.CORS_ORIGIN.split(","), credentials: true }));
   app.use(morgan(isProd ? "combined" : "dev"));
 

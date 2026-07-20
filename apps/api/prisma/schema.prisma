@@ -46,6 +46,7 @@ model User {
   refreshTokens    RefreshToken[]
   sentMessages     Message[] @relation("sentMessages")
   receivedMessages Message[] @relation("receivedMessages")
+  dailyVisits      DailyVisit[]
 }
 
 model RefreshToken {
@@ -597,13 +598,23 @@ model AuditLog {
 }
 
 /// One row per user per day with any authenticated activity — powers the
-/// admin dashboard's "visitors" counters. Written fire-and-forget by the
-/// auth middleware (throttled in-process, so ~one write per user per day).
+/// admin dashboard's "visitors" counters and Administration › Visitors.
+/// Written fire-and-forget by the auth middleware (throttled in-process,
+/// so ~one write per user per day). Client details are captured from the
+/// first request of the day: IP (X-Forwarded-For aware), country (from the
+/// CDN's viewer-country header when present) and the parsed user agent.
 model DailyVisit {
-  id    String   @id @default(cuid())
+  id     String   @id @default(cuid())
   userId String
-  role  String
-  date  DateTime // normalized to midnight UTC
+  user   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   String
+  date   DateTime // normalized to midnight UTC
+  ip        String?
+  country   String? // ISO-3166 alpha-2 from CloudFront/Cloudflare headers, "Local" for loopback
+  browser   String? // e.g. "Chrome 126"
+  os        String? // e.g. "Windows", "iOS"
+  device    String? // Desktop | Mobile | Tablet
+  userAgent String? // raw User-Agent, kept for anything the parser misses
 
   @@unique([userId, date])
   @@index([date])

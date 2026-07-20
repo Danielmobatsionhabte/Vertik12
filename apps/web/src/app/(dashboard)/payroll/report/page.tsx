@@ -2,7 +2,7 @@
 
 import { useState, type ChangeEvent } from "react";
 import Link from "next/link";
-import { get, getSession, ApiClientError } from "@/lib/api";
+import { get, post, getSession, ApiClientError } from "@/lib/api";
 import { formatMoney, monthLabel } from "@/lib/format";
 import { Badge, Button, Card, ErrorNote, Field, Input, PageHeader, Select, Spinner, StatCard } from "@/components/ui";
 import { Icon } from "@/components/icons";
@@ -103,6 +103,8 @@ export default function PayrollReportPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<EditablePayslip | null>(null);
+  const [emailing, setEmailing] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   const role = getSession()?.user.role;
   const isAdmin = role === "ADMIN" || role === "SUPER_ADMIN";
 
@@ -128,6 +130,26 @@ export default function PayrollReportPage() {
     }
   }
 
+  /** Emails the currently filtered report (defaults to the signed-in admin). */
+  async function emailReport() {
+    setEmailing(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const body: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(filters)) {
+        if (!value) continue;
+        body[key] = key === "minNet" || key === "maxNet" ? Math.round(parseFloat(value) * 100) : value;
+      }
+      const result = await post<{ message: string }>("/payroll/report/email", body);
+      setNotice(result.message);
+    } catch (err) {
+      setError(err instanceof ApiClientError ? err.message : "Failed to email the report");
+    } finally {
+      setEmailing(false);
+    }
+  }
+
   return (
     <div>
       <div className="print:hidden">
@@ -143,6 +165,13 @@ export default function PayrollReportPage() {
               <Button variant="secondary" onClick={() => window.print()} disabled={!report}>
                 <Icon name="printer" className="h-4 w-4" /> Print
               </Button>
+              {isAdmin && (
+                <Button variant="secondary" onClick={() => void emailReport()} loading={emailing}
+                  disabled={!report || report.rows.length === 0}
+                  title="Email this report (with the filters above) to your account email">
+                  <Icon name="mail" className="h-4 w-4" /> Email report
+                </Button>
+              )}
             </>
           }
         />
@@ -200,6 +229,9 @@ export default function PayrollReportPage() {
           </div>
         </Card>
         <ErrorNote message={error} />
+        {notice && (
+          <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{notice}</div>
+        )}
       </div>
 
       {loading && <div className="flex justify-center py-16 text-brand-600 print:hidden"><Spinner /></div>}
@@ -223,6 +255,7 @@ export default function PayrollReportPage() {
             {report.rows.length === 0 ? (
               <p className="py-10 text-center text-sm text-slate-400">No payslips match these filters.</p>
             ) : (
+              <div className="table-scroll">
               <table className="w-full text-xs">
                 <thead>
                   <tr className="border-b border-slate-200 text-left text-[11px] uppercase tracking-wide text-slate-500">
@@ -291,6 +324,7 @@ export default function PayrollReportPage() {
                   </tr>
                 </tfoot>
               </table>
+              </div>
             )}
           </Card>
 
@@ -298,6 +332,7 @@ export default function PayrollReportPage() {
             <div className="grid gap-6 lg:grid-cols-2">
               <Card className="p-6">
                 <h3 className="mb-3 text-sm font-semibold text-slate-700">By month</h3>
+                <div className="table-scroll">
                 <table className="w-full text-xs">
                   <thead>
                     <tr className="border-b border-slate-200 text-left text-[11px] uppercase tracking-wide text-slate-500">
@@ -318,9 +353,11 @@ export default function PayrollReportPage() {
                     ))}
                   </tbody>
                 </table>
+                </div>
               </Card>
               <Card className="p-6">
                 <h3 className="mb-3 text-sm font-semibold text-slate-700">By department</h3>
+                <div className="table-scroll">
                 <table className="w-full text-xs">
                   <thead>
                     <tr className="border-b border-slate-200 text-left text-[11px] uppercase tracking-wide text-slate-500">
@@ -341,6 +378,7 @@ export default function PayrollReportPage() {
                     ))}
                   </tbody>
                 </table>
+                </div>
               </Card>
             </div>
           )}

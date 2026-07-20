@@ -6,7 +6,7 @@ import Link from "next/link";
 import type { Paginated } from "@vertik12/shared";
 import { get, post, getSession, ApiClientError } from "@/lib/api";
 import { useGrades } from "@/lib/grades";
-import { fullName, gradeLabel } from "@/lib/format";
+import { formatDate, fullName, gradeLabel } from "@/lib/format";
 import { Badge, Button, Card, ErrorNote, Field, Input, Modal, PageHeader, Select, Spinner } from "@/components/ui";
 import { DataTable, Pager } from "@/components/data-table";
 
@@ -18,10 +18,12 @@ interface StudentRow {
   gradeLevel: string;
   gender: string;
   status: string;
+  admittedAt: string;
   enrollments: Array<{ classRoom: { name: string } }>;
 }
 
 interface ClassOption { id: string; name: string; gradeLevel: string }
+interface YearOption { id: string; name: string; isActive: boolean }
 
 export default function StudentsPage() {
   const router = useRouter();
@@ -30,7 +32,10 @@ export default function StudentsPage() {
   const [search, setSearch] = useState("");
   const [gradeLevel, setGradeLevel] = useState("");
   const [classRoomId, setClassRoomId] = useState("");
+  const [yearId, setYearId] = useState("");
+  const [sort, setSort] = useState("recent");
   const [classes, setClasses] = useState<ClassOption[]>([]);
+  const [years, setYears] = useState<YearOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAssign, setShowAssign] = useState(false);
   const grades = useGrades();
@@ -38,21 +43,29 @@ export default function StudentsPage() {
   const canManage = ["SUPER_ADMIN", "ADMIN", "REGISTRAR"].includes(getSession()?.user.role ?? "");
 
   useEffect(() => {
-    get<ClassOption[]>("/academics/classes").then(setClasses).catch(() => setClasses([]));
+    get<YearOption[]>("/academics/years").then(setYears).catch(() => setYears([]));
   }, []);
+
+  // Classes follow the chosen year, so its sections are filterable too.
+  useEffect(() => {
+    const params = yearId ? `?academicYearId=${yearId}` : "";
+    get<ClassOption[]>(`/academics/classes${params}`).then(setClasses).catch(() => setClasses([]));
+    setClassRoomId("");
+  }, [yearId]);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const params = new URLSearchParams({ page: String(page), pageSize: "20" });
+    const params = new URLSearchParams({ page: String(page), pageSize: "20", sort });
     if (search) params.set("search", search);
     if (gradeLevel) params.set("gradeLevel", gradeLevel);
     if (classRoomId) params.set("classRoomId", classRoomId);
+    if (yearId) params.set("academicYearId", yearId);
     try {
       setData(await get<Paginated<StudentRow>>(`/students?${params}`));
     } finally {
       setLoading(false);
     }
-  }, [page, search, gradeLevel, classRoomId]);
+  }, [page, search, gradeLevel, classRoomId, yearId, sort]);
 
   useEffect(() => {
     // Debounce so typing in the search box doesn't fire a request per key.
@@ -70,6 +83,9 @@ export default function StudentsPage() {
           // accountants get read-only access to student records.
           canManage ? (
             <div className="flex gap-2">
+              <Link href="/students/report">
+                <Button variant="secondary">Yearly report</Button>
+              </Link>
               <Button variant="secondary" onClick={() => setShowAssign(true)}>Assign to academic year</Button>
               <Link href="/students/new">
                 <Button>+ Register student</Button>
@@ -120,6 +136,33 @@ export default function StudentsPage() {
                 <option key={c.id} value={c.id}>{c.name}</option>
               ))}
           </Select>
+          {/* Year filter: switch to any academic year (previous ones too) to
+              see exactly who was enrolled then. */}
+          <Select
+            className="max-w-[190px]"
+            value={yearId}
+            onChange={(e) => {
+              setYearId(e.target.value);
+              setPage(1);
+            }}
+          >
+            <option value="">All academic years</option>
+            {years.map((y) => (
+              <option key={y.id} value={y.id}>{y.name}{y.isActive ? " (current)" : ""}</option>
+            ))}
+          </Select>
+          <Select
+            className="max-w-[200px]"
+            value={sort}
+            onChange={(e) => {
+              setSort(e.target.value);
+              setPage(1);
+            }}
+          >
+            <option value="recent">Recently registered first</option>
+            <option value="name">Name (A–Z)</option>
+            <option value="grade">Grade</option>
+          </Select>
         </div>
 
         <DataTable
@@ -135,6 +178,7 @@ export default function StudentsPage() {
             { header: "Grade", cell: (s) => gradeLabel(s.gradeLevel) },
             { header: "Class", cell: (s) => s.enrollments[0]?.classRoom.name ?? "—" },
             { header: "Gender", cell: (s) => <span className="capitalize">{s.gender.toLowerCase()}</span> },
+            { header: "Registered", cell: (s) => formatDate(s.admittedAt) },
             { header: "Status", cell: (s) => <Badge>{s.status}</Badge> },
           ]}
         />
@@ -157,7 +201,6 @@ export default function StudentsPage() {
 // ============ assign existing students to an academic year ============
 
 interface UnassignedStudent { id: string; admissionNo: string; firstName: string; lastName: string; gradeLevel: string }
-interface YearOption { id: string; name: string; isActive: boolean }
 
 /**
  * New-year rollover: existing/previously registered students who have no
@@ -169,12 +212,23 @@ function AssignToYearModal({ onClose, onAssigned }: { onClose: () => void; onAss
   const [years, setYears] = useState<YearOption[]>([]);
   const [yearId, setYearId] = useState("");
   const [grade, setGrade] = useState("");
+  const [search, setSearch] = useState("");
   const [classes, setClasses] = useState<ClassOption[]>([]);
   const [classRoomId, setClassRoomId] = useState("");
   const [students, setStudents] = useState<UnassignedStudent[] | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+
+  // Quick filter over the loaded list: admission no or (full) name.
+  // Selections survive a changing search — only the visible rows change.
+  const query = search.trim().toLowerCase();
+  const visible = students?.filter(
+    (s) =>
+      !query ||
+      s.admissionNo.toLowerCase().includes(query) ||
+      `${s.firstName} ${s.lastName}`.toLowerCase().includes(query),
+  );
 
   useEffect(() => {
     get<YearOption[]>("/academics/years").then((ys) => {
@@ -247,17 +301,29 @@ function AssignToYearModal({ onClose, onAssigned }: { onClose: () => void; onAss
                 .map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </Select>
           </Field>
+          <Field label="Search student">
+            <Input
+              className="!w-64"
+              placeholder="Admission no or name…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </Field>
         </div>
 
-        {!students ? (
+        {!students || !visible ? (
           <div className="flex justify-center py-10 text-brand-600"><Spinner /></div>
         ) : students.length === 0 ? (
           <p className="rounded-lg bg-slate-50 py-8 text-center text-sm text-slate-400">
             Every active student{grade ? ` in ${gradeLabel(grade)}` : ""} is already enrolled in this academic year.
           </p>
+        ) : visible.length === 0 ? (
+          <p className="rounded-lg bg-slate-50 py-8 text-center text-sm text-slate-400">
+            No unassigned student matches “{search.trim()}” — check the spelling or clear the search.
+          </p>
         ) : (
           <ul className="max-h-72 divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-200">
-            {students.map((s) => (
+            {visible.map((s) => (
               <li key={s.id}>
                 <label className="flex cursor-pointer items-center gap-3 px-4 py-2.5 hover:bg-slate-50">
                   <input type="checkbox" checked={selected.has(s.id)} onChange={() => toggle(s.id)} />
@@ -271,7 +337,10 @@ function AssignToYearModal({ onClose, onAssigned }: { onClose: () => void; onAss
 
         <ErrorNote message={error} />
         <div className="flex items-center justify-between">
-          <p className="text-xs text-slate-400">{selected.size} student(s) selected</p>
+          <p className="text-xs text-slate-400">
+            {selected.size} student(s) selected
+            {query && students && visible ? ` · showing ${visible.length} of ${students.length}` : ""}
+          </p>
           <div className="flex gap-3">
             <Button variant="secondary" onClick={onClose}>Cancel</Button>
             <Button loading={saving} onClick={() => void assign()} disabled={selected.size === 0 || !classRoomId}>

@@ -173,7 +173,7 @@ export default function AttendancePage() {
         ) : rows.length === 0 ? (
           <p className="py-16 text-center text-sm text-slate-400">No students enrolled in this class.</p>
         ) : (
-          <ul className="divide-y divide-slate-100">
+          <ul className="list-scroll divide-y divide-slate-100">
             {rows.map((r) => (
               <li key={r.student.id} className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
                 <div>

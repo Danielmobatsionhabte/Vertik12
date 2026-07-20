@@ -4,6 +4,8 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "../../lib/prisma";
 import { ApiError } from "../../lib/errors";
 import { hashPassword } from "../../lib/auth-tokens";
+import { sendMail } from "../../lib/mailer";
+import { accountCreatedEmail, passwordResetEmail } from "../../lib/email-templates";
 import { paginate, toSkipTake } from "../../lib/pagination";
 
 // ============================ user management ============================
@@ -42,7 +44,7 @@ export async function listUsers(q: PaginationQuery & { role?: string }) {
 }
 
 export async function createUser(input: { email: string; password: string; firstName: string; lastName: string; role: string }) {
-  return prisma.user.create({
+  const user = await prisma.user.create({
     data: {
       email: input.email.toLowerCase(),
       passwordHash: await hashPassword(input.password),
@@ -54,6 +56,16 @@ export async function createUser(input: { email: string; password: string; first
     },
     select: { id: true, email: true, firstName: true, lastName: true, role: true, isActive: true },
   });
+
+  // EMAIL PATH: admin creates a user → account notice (the admin-chosen
+  // initial password is deliberately NOT emailed). Fire-and-forget.
+  void sendMail({
+    to: user.email,
+    subject: `Your Vertik12 account was created`,
+    html: accountCreatedEmail({ firstName: user.firstName, role: user.role, email: user.email }),
+  }).catch((err) => console.error("[mailer] account-created email failed:", err));
+
+  return user;
 }
 
 export async function updateUser(id: string, input: { role?: string; isActive?: boolean; firstName?: string; lastName?: string }, actingUserId: string) {
@@ -75,12 +87,55 @@ export async function updateUser(id: string, input: { role?: string; isActive?: 
 /** Reset a user's password to a generated temporary one and revoke sessions. */
 export async function resetPassword(id: string) {
   const tempPassword = `Vrt-${crypto.randomBytes(6).toString("base64url")}`;
-  await prisma.user.update({
+  const user = await prisma.user.update({
     where: { id },
     data: { passwordHash: await hashPassword(tempPassword), mustChangePassword: true },
+    select: { email: true, firstName: true },
   });
   await prisma.refreshToken.updateMany({ where: { userId: id, revokedAt: null }, data: { revokedAt: new Date() } });
+
+  // EMAIL PATH: password reset → the temporary password goes to the account
+  // owner directly (the admin still sees it in the UI as a fallback).
+  void sendMail({
+    to: user.email,
+    subject: `Your Vertik12 password was reset`,
+    html: passwordResetEmail({ firstName: user.firstName, email: user.email, temporaryPassword: tempPassword }),
+  }).catch((err) => console.error("[mailer] password-reset email failed:", err));
+
   return { temporaryPassword: tempPassword };
+}
+
+// ============================ visitors ============================
+// Administration › Visitors: one row per user per day, with the IP, country
+// and browser/device captured from that day's first authenticated request.
+
+export async function listVisits(q: PaginationQuery & { date?: string }) {
+  const where: Prisma.DailyVisitWhereInput = {
+    ...(q.date ? { date: new Date(`${q.date}T00:00:00.000Z`) } : {}),
+    ...(q.search
+      ? {
+          user: {
+            is: {
+              OR: [
+                { email: { contains: q.search } },
+                { firstName: { contains: q.search } },
+                { lastName: { contains: q.search } },
+              ],
+            },
+          },
+        }
+      : {}),
+  };
+  const [items, total] = await Promise.all([
+    prisma.dailyVisit.findMany({
+      where,
+      ...toSkipTake(q),
+      orderBy: [{ date: "desc" }, { id: "desc" }],
+      include: { user: { select: { email: true, firstName: true, lastName: true } } },
+    }),
+    prisma.dailyVisit.count({ where }),
+  ]);
+  return paginate(items, total, q);
 }
 
 // ============================ audit logs ============================

@@ -15,6 +15,8 @@ const listQuery = paginationSchema.extend({
   status: z.enum(STAFF_STATUSES).optional(),
   role: z.enum(["ADMIN", "REGISTRAR", "TEACHER", "ACCOUNTANT"]).optional(),
   department: z.string().trim().max(100).optional(),
+  academicYearId: z.string().optional(), // roster during that year (past years too)
+  sort: z.enum(["staffNo", "recent"]).optional(), // recent = latest hires first
 });
 
 staffRouter.get(
@@ -23,6 +25,24 @@ staffRouter.get(
   validateQuery(listQuery),
   asyncHandler(async (req, res) => {
     res.json(ok(await staff.listStaff(parsedQuery(req))));
+  }),
+);
+
+// Per-year HR report (any year, incl. previous ones).
+// NOTE: registered before "/:id" so the path isn't swallowed by the param route.
+staffRouter.get(
+  "/report",
+  requireRoles("ADMIN", "ACCOUNTANT"),
+  validateQuery(z.object({
+    academicYearId: z.string().min(1),
+    staffType: z.enum(STAFF_TYPES).optional(),
+    status: z.enum(STAFF_STATUSES).optional(),
+    department: z.string().trim().max(100).optional(),
+  })),
+  asyncHandler(async (req, res) => {
+    const { academicYearId, ...filters } =
+      parsedQuery<{ academicYearId: string; staffType?: string; status?: string; department?: string }>(req);
+    res.json(ok(await staff.staffYearReport(academicYearId, filters)));
   }),
 );
 

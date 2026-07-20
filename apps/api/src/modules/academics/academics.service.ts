@@ -83,6 +83,34 @@ export async function activateAcademicYear(id: string) {
   return prisma.academicYear.update({ where: { id }, data: { isActive: true } });
 }
 
+/**
+ * Remove an academic year — only while no data lives in it. Classes,
+ * enrollments, fee presets and exams (via the year's terms) all block the
+ * deletion, so school history can never be cascade-deleted by accident;
+ * empty terms are just calendar setup and are removed with the year.
+ * The active year can't be removed — another year must be activated first.
+ */
+export async function deleteAcademicYear(id: string) {
+  const year = await prisma.academicYear.findUnique({ where: { id } });
+  if (!year) throw ApiError.notFound("Academic year");
+  if (year.isActive) {
+    throw ApiError.badRequest(`${year.name} is the active year — make another year active before removing it`);
+  }
+  const [classes, enrollments, fees, exams] = await Promise.all([
+    prisma.classRoom.count({ where: { academicYearId: id } }),
+    prisma.enrollment.count({ where: { academicYearId: id } }),
+    prisma.feeStructure.count({ where: { academicYearId: id } }),
+    prisma.exam.count({ where: { term: { is: { academicYearId: id } } } }),
+  ]);
+  if (classes + enrollments + fees + exams > 0) {
+    throw ApiError.badRequest(
+      `${year.name} still has ${classes} class(es), ${enrollments} enrollment(s), ${fees} fee preset(s) and ` +
+      `${exams} exam(s) — remove or move them first`,
+    );
+  }
+  return prisma.academicYear.delete({ where: { id } });
+}
+
 export const createTerm = (input: { name: string; academicYearId: string; startDate: Date; endDate: Date }) =>
   prisma.term.create({ data: input });
 
@@ -127,6 +155,63 @@ export const createClassRoom = async (input: {
   await assertGradeExists(input.gradeLevel); // grades are set up by the admin first
   return prisma.classRoom.create({ data: { ...input, branch: input.branch || null } });
 };
+
+/**
+ * New-year rollover helper: copy every class of one academic year into
+ * another so the admin doesn't re-create each section by hand. Copies the
+ * structure (name, grade, section, branch, capacity, homeroom teacher) and
+ * each class's subject/teacher assignments. Classes whose name already
+ * exists in the target year are skipped, so re-running tops up a partial
+ * manual setup instead of failing. Enrollments, attendance and timetables
+ * are NOT copied — students move via "Assign students to an academic year".
+ */
+export async function copyClassRooms(fromAcademicYearId: string, toAcademicYearId: string) {
+  if (fromAcademicYearId === toAcademicYearId) {
+    throw ApiError.badRequest("Pick two different academic years — the source and the destination");
+  }
+  const [from, to] = await Promise.all([
+    prisma.academicYear.findUnique({ where: { id: fromAcademicYearId } }),
+    prisma.academicYear.findUnique({ where: { id: toAcademicYearId } }),
+  ]);
+  if (!from) throw ApiError.notFound("Source academic year");
+  if (!to) throw ApiError.notFound("Destination academic year");
+
+  const [source, existing] = await Promise.all([
+    prisma.classRoom.findMany({
+      where: { academicYearId: fromAcademicYearId },
+      include: { classSubjects: { select: { subjectId: true, teacherId: true } } },
+      orderBy: [{ gradeLevel: "asc" }, { section: "asc" }],
+    }),
+    prisma.classRoom.findMany({ where: { academicYearId: toAcademicYearId }, select: { name: true } }),
+  ]);
+  if (source.length === 0) {
+    throw ApiError.badRequest(`${from.name} has no classes to copy`);
+  }
+
+  const taken = new Set(existing.map((c) => c.name));
+  const toCopy = source.filter((c) => !taken.has(c.name));
+
+  await prisma.$transaction(
+    toCopy.map((c) =>
+      prisma.classRoom.create({
+        data: {
+          name: c.name,
+          gradeLevel: c.gradeLevel,
+          section: c.section,
+          branch: c.branch,
+          capacity: c.capacity,
+          academicYearId: toAcademicYearId,
+          homeroomTeacherId: c.homeroomTeacherId,
+          classSubjects: {
+            create: c.classSubjects.map((cs) => ({ subjectId: cs.subjectId, teacherId: cs.teacherId })),
+          },
+        },
+      }),
+    ),
+  );
+
+  return { copied: toCopy.length, skipped: source.length - toCopy.length, from: from.name, to: to.name };
+}
 
 /**
  * Class updates split by responsibility:

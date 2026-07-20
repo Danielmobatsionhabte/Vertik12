@@ -51,6 +51,12 @@ academicsRouter.post("/years/:id/activate", requireRoles("ADMIN"),
     res.json(ok(await academics.activateAcademicYear(req.params.id), "Academic year activated"));
   }));
 
+// Remove an empty year (no classes/enrollments/fees/exams; never the active one).
+academicsRouter.delete("/years/:id", requireRoles("ADMIN"),
+  asyncHandler(async (req, res) => {
+    res.json(ok(await academics.deleteAcademicYear(req.params.id), "Academic year removed"));
+  }));
+
 academicsRouter.post("/terms", requireRoles("ADMIN"), validateBody(createTermSchema),
   asyncHandler(async (req, res) => {
     res.status(201).json(ok(await academics.createTerm(req.body)));
@@ -69,6 +75,19 @@ academicsRouter.get("/classes/:id", asyncHandler(async (req, res) => {
 academicsRouter.post("/classes", requireRoles("ADMIN", "REGISTRAR"), validateBody(createClassRoomSchema),
   asyncHandler(async (req, res) => {
     res.status(201).json(ok(await academics.createClassRoom(req.body)));
+  }));
+
+// New-year rollover: copy every class (structure + subject/teacher
+// assignments) from one academic year into another; duplicates by name are
+// skipped. Same roles as class creation.
+academicsRouter.post("/classes/copy", requireRoles("ADMIN", "REGISTRAR"),
+  validateBody(z.object({
+    fromAcademicYearId: z.string().min(1),
+    toAcademicYearId: z.string().min(1),
+  })),
+  asyncHandler(async (req, res) => {
+    const result = await academics.copyClassRooms(req.body.fromAcademicYearId, req.body.toAcademicYearId);
+    res.status(201).json(ok(result, `Copied ${result.copied} class(es) from ${result.from} to ${result.to}`));
   }));
 
 // Rename/restructure = SUPER_ADMIN; homeroom teacher = ADMIN/REGISTRAR too.

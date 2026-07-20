@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from "express";
 import type { AuthTokenPayload, Role } from "@vertik12/shared";
 import { verifyAccessToken } from "../lib/auth-tokens";
+import { clientInfo } from "../lib/client-info";
 import { ApiError } from "../lib/errors";
 import { prisma } from "../lib/prisma";
 
@@ -20,7 +21,7 @@ declare module "express-serve-static-core" {
 const visitCache = new Set<string>();
 setInterval(() => visitCache.clear(), 6 * 60 * 60 * 1000).unref(); // guard the Set's size across day rollovers
 
-function recordVisit(userId: string, role: string) {
+function recordVisit(userId: string, role: string, req: Request) {
   // Fully isolated from the request: any failure here — a stale Prisma
   // client without the DailyVisit model, a DB hiccup — must be swallowed,
   // never surfaced as a 500. Promise.resolve().then(...) also converts a
@@ -32,11 +33,15 @@ function recordVisit(userId: string, role: string) {
     const key = `${userId}:${date.toISOString().slice(0, 10)}`;
     if (visitCache.has(key)) return;
     visitCache.add(key);
+    // Capture IP / country / browser / device from the day's first request
+    // (Administration › Visitors). Header reads stay outside the async hop
+    // because req is recycled once the response ends.
+    const client = clientInfo(req);
     Promise.resolve()
       .then(() =>
         prisma.dailyVisit.upsert({
           where: { userId_date: { userId, date } },
-          create: { userId, role, date },
+          create: { userId, role, date, ...client },
           update: {},
         }),
       )
@@ -70,7 +75,7 @@ export function authenticate(req: Request, _res: Response, next: NextFunction) {
         throw ApiError.unauthorized("Account is disabled");
       }
       req.user = { ...payload, role: user.role as Role };
-      recordVisit(payload.sub, user.role);
+      recordVisit(payload.sub, user.role, req);
       next();
     })
     .catch(next);

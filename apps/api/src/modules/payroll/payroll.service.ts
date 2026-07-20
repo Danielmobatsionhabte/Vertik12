@@ -1,6 +1,7 @@
 import type { CreatePayrollRunInput, PayrollReportQuery, UpdatePayslipInput, UpsertSalaryStructureInput } from "@vertik12/shared";
 import { prisma } from "../../lib/prisma";
 import { ApiError } from "../../lib/errors";
+import { emailLayout, esc } from "../../lib/email-templates";
 
 type Component = { name: string; amount: number };
 const sum = (components: Component[]) => components.reduce((s, c) => s + c.amount, 0);
@@ -276,6 +277,46 @@ export async function payrollReport(f: PayrollReportQuery) {
       .sort((a, b) => b[1].net - a[1].net)
       .map(([department, v]) => ({ department, ...v })),
   };
+}
+
+/**
+ * HTML for the emailed payroll report (Payroll › Report › Email report):
+ * grand totals plus the per-month and per-department summaries. `period` is
+ * a human label like "2026" or "2026-01 to 2026-06".
+ */
+export function payrollReportEmailHtml(report: Awaited<ReturnType<typeof payrollReport>>, period: string): string {
+  const money = (cents: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100);
+  const th = (label: string, right = false) =>
+    `<th style="padding:6px 10px;font-size:11px;text-transform:uppercase;color:#64748b;text-align:${right ? "right" : "left"};border-bottom:1px solid #e2e8f0">${esc(label)}</th>`;
+  const td = (v: string, right = false, strong = false) =>
+    `<td style="padding:6px 10px;font-size:13px;color:#0f172a;text-align:${right ? "right" : "left"};${strong ? "font-weight:600;" : ""}border-bottom:1px solid #f1f5f9">${v}</td>`;
+  const monthName = (y: number, m: number) =>
+    new Date(y, m - 1, 1).toLocaleDateString("en-US", { month: "long", year: "numeric" });
+
+  const summaryTable = (
+    header: string,
+    rows: Array<{ label: string; payslips: number; gross: number; net: number }>,
+  ) => `
+    <h2 style="margin:20px 0 8px;font-size:14px;color:#0f172a">${esc(header)}</h2>
+    <table style="border-collapse:collapse;width:100%">
+      <tr>${th("")}${th("Payslips", true)}${th("Gross", true)}${th("Net", true)}</tr>
+      ${rows
+        .map((r) => `<tr>${td(esc(r.label))}${td(String(r.payslips), true)}${td(money(r.gross), true)}${td(money(r.net), true, true)}</tr>`)
+        .join("")}
+    </table>`;
+
+  return emailLayout(
+    `Payroll report — ${period}`,
+    `<p style="font-size:14px;color:#334155">
+       ${report.totals.payslips} payslip(s) across ${report.totals.staff} employee(s).
+       Gross <strong>${money(report.totals.gross)}</strong>,
+       deductions <strong>${money(report.totals.deductions)}</strong>,
+       net payout <strong>${money(report.totals.net)}</strong>.
+     </p>
+     ${summaryTable("By month", report.byMonth.map((m) => ({ label: monthName(m.year, m.month), ...m })))}
+     ${summaryTable("By department", report.byDepartment.map((d) => ({ label: d.department, ...d })))}
+     <p style="font-size:12px;color:#94a3b8;margin-top:20px">Open Payroll › Report in the web app for the full payslip-by-payslip breakdown and CSV export.</p>`,
+  );
 }
 
 /** A staff member's own payslip history (also used on the staff profile). */

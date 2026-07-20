@@ -188,7 +188,7 @@ function ChildView({ studentId }: { studentId: string }) {
           {resultsBySubject.length === 0 ? (
             <p className="py-12 text-center text-sm text-slate-400">No results recorded yet.</p>
           ) : (
-            <ul className="divide-y divide-slate-100">
+            <ul className="list-scroll divide-y divide-slate-100">
               {resultsBySubject.map((s) => (
                 <li key={s.subject.id} className="px-6 py-4">
                   <div className="flex items-center justify-between gap-3">
@@ -219,7 +219,7 @@ function ChildView({ studentId }: { studentId: string }) {
           ) : homework.length === 0 ? (
             <p className="py-10 text-center text-sm text-slate-400">No assignments from the teachers yet.</p>
           ) : (
-            <ul className="divide-y divide-slate-100">
+            <ul className="list-scroll divide-y divide-slate-100">
               {homework.slice((homeworkPage - 1) * PER_PAGE, homeworkPage * PER_PAGE).map((a) => (
                 <li key={a.id} className="px-6 py-4">
                   <div className="flex items-start justify-between gap-3">
@@ -281,7 +281,7 @@ function ChildView({ studentId }: { studentId: string }) {
         <Card>
           <h2 className="border-b border-slate-100 px-6 py-4 text-sm font-semibold text-slate-700">Weekly schedule</h2>
           {classRoom && classRoom.timetableSlots.length > 0 ? (
-            <ul className="divide-y divide-slate-100">
+            <ul className="list-scroll divide-y divide-slate-100">
               {classRoom.timetableSlots.map((slot) => (
                 <li key={slot.id} className="flex items-center justify-between px-6 py-3 text-sm">
                   <span className="font-medium text-slate-800">{slot.subject.name}</span>

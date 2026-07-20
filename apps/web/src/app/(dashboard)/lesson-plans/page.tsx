@@ -515,6 +515,7 @@ function PlanCalendar({ params, onOpen }: { params: string; onOpen: (p: PlanRow)
           </Button>
         </div>
 
+        <div className="table-scroll">
         <table className="w-full table-fixed text-sm">
           <thead>
             <tr className="border-b border-slate-200 text-[11px] uppercase tracking-wide text-slate-400">
@@ -574,6 +575,7 @@ function PlanCalendar({ params, onOpen }: { params: string; onOpen: (p: PlanRow)
             })}
           </tbody>
         </table>
+        </div>
       </Card>
 
       {unscheduled.length > 0 && (

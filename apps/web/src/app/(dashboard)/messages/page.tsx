@@ -85,7 +85,7 @@ export default function MessagesPage() {
             {box === "inbox" ? "Your inbox is empty." : "You haven't sent any messages yet."}
           </p>
         ) : (
-          <ul className="divide-y divide-slate-100">
+          <ul className="list-scroll divide-y divide-slate-100">
             {rows.map((m) => {
               const person = box === "inbox" ? m.sender : m.recipient;
               const unread = box === "inbox" && !m.readAt;

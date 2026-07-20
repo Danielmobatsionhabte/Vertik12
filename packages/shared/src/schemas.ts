@@ -523,6 +523,16 @@ export const emailPayslipSchema = z.object({
 });
 export type EmailPayslipInput = z.infer<typeof emailPayslipSchema>;
 
+/**
+ * Email a payroll report (e.g. the yearly summary: from 2026-01 to 2026-12).
+ * Same filters as the on-screen report so what is emailed is what is shown.
+ */
+export const emailPayrollReportSchema = payrollReportQuerySchema.extend({
+  /** Defaults to the signed-in admin's email when omitted. */
+  email: email.optional(),
+});
+export type EmailPayrollReportInput = z.infer<typeof emailPayrollReportSchema>;
+
 // ---------- grade levels (admin-configured ladder) ----------
 export const gradeDefSchema = z.object({
   code: gradeCode, // stored on students/classes/subjects/fees

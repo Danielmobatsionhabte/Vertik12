@@ -54,9 +54,21 @@ const config: Config = {
           "0%, 100%": { backgroundPosition: "0% 50%" },
           "50%": { backgroundPosition: "100% 50%" },
         },
+        "fade-up": {
+          from: { opacity: "0", transform: "translateY(18px)" },
+          to: { opacity: "1", transform: "translateY(0)" },
+        },
+        float: {
+          "0%, 100%": { transform: "translateY(0)" },
+          "50%": { transform: "translateY(-18px)" },
+        },
       },
       animation: {
         "gradient-pan": "gradient-pan 12s ease infinite",
+        // `both` keeps delayed elements hidden until their turn — used for
+        // the landing page's staggered entrances (delay set inline).
+        "fade-up": "fade-up 0.7s ease-out both",
+        float: "float 9s ease-in-out infinite",
       },
     },
   },

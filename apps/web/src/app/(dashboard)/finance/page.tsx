@@ -44,19 +44,27 @@ function FeeStructuresModal({ canManage, onClose }: { canManage: boolean; onClos
   const grades = useGrades();
   const [fees, setFees] = useState<FeeStructureRow[] | null>(null);
   const [years, setYears] = useState<YearOption[]>([]);
+  // Which year's presets are being viewed ("" = the active year).
+  const [viewYearId, setViewYearId] = useState("");
   const [form, setForm] = useState({ name: "", gradeLevel: "", amount: "", frequency: "MONTHLY", academicYearId: "" });
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  const load = useCallback(() => get<FeeStructureRow[]>("/finance/fee-structures").then(setFees), []);
+  const load = useCallback(() => {
+    setFees(null);
+    const params = viewYearId ? `?academicYearId=${viewYearId}` : "";
+    return get<FeeStructureRow[]>(`/finance/fee-structures${params}`).then(setFees);
+  }, [viewYearId]);
   useEffect(() => {
     void load();
+  }, [load]);
+  useEffect(() => {
     get<YearOption[]>("/academics/years").then((ys) => {
       setYears(ys);
       const active = ys.find((y) => y.isActive) ?? ys[0];
       if (active) setForm((f) => ({ ...f, academicYearId: active.id }));
     });
-  }, [load]);
+  }, []);
 
   async function add(e: FormEvent) {
     e.preventDefault();
@@ -93,11 +101,18 @@ function FeeStructuresModal({ canManage, onClose }: { canManage: boolean; onClos
   return (
     <Modal open title="Fee structures — payments per grade & academic year" onClose={onClose} wide>
       <div className="space-y-5">
+        <div className="flex items-center gap-3">
+          <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Showing year</span>
+          <Select className="!w-56" value={viewYearId} onChange={(e) => setViewYearId(e.target.value)}>
+            <option value="">Active year</option>
+            {years.map((y) => <option key={y.id} value={y.id}>{y.name}{y.isActive ? " (current)" : ""}</option>)}
+          </Select>
+        </div>
         <DataTable
           loading={!fees}
           rows={fees ?? []}
           keyFor={(f) => f.id}
-          emptyTitle="No fee structures for the active year"
+          emptyTitle="No fee structures for this year"
           columns={[
             { header: "Fee", cell: (f) => <span className="font-medium text-slate-900">{f.name}</span> },
             {
@@ -515,9 +530,11 @@ interface PaymentDetail extends PaymentRow {
 }
 
 /** Every processed payment; click one for the full detail + printable receipt. */
-function TransactionsCard({ isSuperAdmin, refreshKey, onChanged }: {
+function TransactionsCard({ isSuperAdmin, refreshKey, academicYearId, onChanged }: {
   isSuperAdmin: boolean;
   refreshKey: number;
+  /** Follows the page's year filter so past years' takings stay browsable. */
+  academicYearId: string;
   onChanged: () => void;
 }) {
   const [data, setData] = useState<Paginated<PaymentRow> | null>(null);
@@ -532,8 +549,9 @@ function TransactionsCard({ isSuperAdmin, refreshKey, onChanged }: {
     const params = new URLSearchParams({ page: String(page), pageSize: "10" });
     if (status) params.set("status", status);
     if (search) params.set("search", search);
+    if (academicYearId) params.set("academicYearId", academicYearId);
     return get<Paginated<PaymentRow>>(`/finance/payments?${params}`).then(setData);
-  }, [page, status, search]);
+  }, [page, status, search, academicYearId]);
 
   useEffect(() => {
     const t = setTimeout(() => void load(), search ? 300 : 0);
@@ -625,7 +643,7 @@ function TransactionsCard({ isSuperAdmin, refreshKey, onChanged }: {
               </div>
             </div>
 
-            <div className="rounded-lg border border-slate-200">
+            <div className="table-scroll rounded-lg border border-slate-200">
               <table className="w-full text-xs">
                 <tbody>
                   {detail.invoice.items.map((it) => (
@@ -688,6 +706,8 @@ export default function FinancePage() {
   const [page, setPage] = useState(1);
   const [status, setStatus] = useState("");
   const [gradeFilter, setGradeFilter] = useState("");
+  const [yearFilter, setYearFilter] = useState("");
+  const [years, setYears] = useState<YearOption[]>([]);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [showFees, setShowFees] = useState(false);
@@ -703,23 +723,38 @@ export default function FinancePage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [lastReceiptId, setLastReceiptId] = useState<string | null>(null);
 
+  useEffect(() => {
+    get<YearOption[]>("/academics/years")
+      .then((ys) => {
+        setYears(ys);
+        // Billing defaults to the admin's current (active) year — previous
+        // years stay one dropdown change away.
+        const active = ys.find((y) => y.isActive);
+        if (active) setYearFilter(active.id);
+      })
+      .catch(() => setYears([]));
+  }, []);
+
   const load = useCallback(async () => {
     setLoading(true);
     const params = new URLSearchParams({ page: String(page), pageSize: "15" });
     if (status) params.set("status", status);
     if (gradeFilter) params.set("gradeLevel", gradeFilter);
+    if (yearFilter) params.set("academicYearId", yearFilter);
     if (search) params.set("search", search);
     try {
+      // The overview cards follow the year filter too, so switching to a
+      // previous year shows that year's invoiced/collected/outstanding.
       const [inv, ov] = await Promise.all([
         get<Paginated<InvoiceRow>>(`/finance/invoices?${params}`),
-        get<Overview>("/finance/overview"),
+        get<Overview>(`/finance/overview${yearFilter ? `?academicYearId=${yearFilter}` : ""}`),
       ]);
       setData(inv);
       setOverview(ov);
     } finally {
       setLoading(false);
     }
-  }, [page, status, gradeFilter, search]);
+  }, [page, status, gradeFilter, yearFilter, search]);
 
   useEffect(() => {
     const t = setTimeout(load, search ? 300 : 0);
@@ -803,6 +838,7 @@ export default function FinancePage() {
         subtitle="Billing, collections and online payments"
         actions={
           <div className="flex gap-2 print:hidden">
+            <Link href="/finance/report"><Button variant="secondary">Yearly report</Button></Link>
             <Button variant="secondary" onClick={() => window.print()}><Icon name="printer" className="h-4 w-4" /> Print invoice report</Button>
             <Button variant="secondary" onClick={() => setShowFees(true)}>Fee structures</Button>
             <Button onClick={() => setShowCollect(true)}>+ Collect payment</Button>
@@ -847,6 +883,11 @@ export default function FinancePage() {
             <option value="">All grades</option>
             {grades.map((g) => <option key={g.code} value={g.code}>{g.name}</option>)}
           </Select>
+          {/* Invoices issued during the chosen academic year (previous years too). */}
+          <Select className="max-w-[190px]" value={yearFilter} onChange={(e) => { setYearFilter(e.target.value); setPage(1); }}>
+            <option value="">All academic years</option>
+            {years.map((y) => <option key={y.id} value={y.id}>{y.name}{y.isActive ? " (current)" : ""}</option>)}
+          </Select>
         </div>
 
         <DataTable
@@ -884,6 +925,7 @@ export default function FinancePage() {
       <TransactionsCard
         isSuperAdmin={role === "SUPER_ADMIN"}
         refreshKey={txRefresh}
+        academicYearId={yearFilter}
         onChanged={() => void load()}
       />
 

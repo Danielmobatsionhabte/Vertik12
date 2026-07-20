@@ -43,6 +43,8 @@ interface StudentProfile {
   enrollments: Array<{ id: string; classRoom: { name: string }; academicYear: { name: string }; status: string }>;
   invoices: Array<{ id: string; number: string; status: string; dueDate: string; items: Array<{ amount: number }> }> | null;
   examResults: Array<{ id: string; marks: number; maxMarks: number; grade: string; subject: { name: string }; exam: { name: string; term: { name: string } } }> | null;
+  /** The academic year the invoices/summary cover (defaults to the active year). */
+  financeYear: { id: string; name: string; isActive: boolean } | null;
 }
 
 export default function StudentProfilePage() {
@@ -65,6 +67,16 @@ function StudentProfileView({ id }: { id: string }) {
   const [webcamFor, setWebcamFor] = useState<"photo" | "doc" | null>(null);
   const [docs, setDocs] = useState<Array<{ id: string; label: string; fileName: string; fileType: string; createdAt: string }> | null>(null);
   const [docLabel, setDocLabel] = useState("Guardian ID");
+  // Billing follows the admin's active year by default; the selector on the
+  // Invoices card switches to any other year (previous ones included).
+  const [financeYearId, setFinanceYearId] = useState("");
+  const [years, setYears] = useState<Array<{ id: string; name: string; isActive: boolean }>>([]);
+
+  useEffect(() => {
+    get<Array<{ id: string; name: string; isActive: boolean }>>("/academics/years")
+      .then(setYears)
+      .catch(() => setYears([]));
+  }, []);
 
   const canManage = ["SUPER_ADMIN", "ADMIN", "REGISTRAR"].includes(getSession()?.user.role ?? "");
 
@@ -152,8 +164,11 @@ function StudentProfileView({ id }: { id: string }) {
   }
 
   const load = useCallback(
-    () => get<StudentProfile>(`/students/${id}`).then(setStudent).catch((e) => setError(e.message)),
-    [id],
+    () =>
+      get<StudentProfile>(`/students/${id}${financeYearId ? `?academicYearId=${financeYearId}` : ""}`)
+        .then(setStudent)
+        .catch((e) => setError(e.message)),
+    [id, financeYearId],
   );
   useEffect(() => {
     void load();
@@ -193,9 +208,9 @@ function StudentProfileView({ id }: { id: string }) {
         <StatCard label="Attendance rate" value={student.attendanceRate === null ? "—" : `${student.attendanceRate}%`} />
         {student.financeSummary && (
           <>
-            <StatCard label="Total invoiced" value={formatMoney(student.financeSummary.invoiced)} />
-            <StatCard label="Total paid" value={formatMoney(student.financeSummary.paid)} />
-            <StatCard label="Outstanding" value={formatMoney(student.financeSummary.outstanding)} />
+            <StatCard label="Invoiced" value={formatMoney(student.financeSummary.invoiced)} detail={student.financeYear?.name ?? "all years"} />
+            <StatCard label="Paid" value={formatMoney(student.financeSummary.paid)} detail={student.financeYear?.name ?? "all years"} />
+            <StatCard label="Outstanding" value={formatMoney(student.financeSummary.outstanding)} detail={student.financeYear?.name ?? "all years"} />
           </>
         )}
       </div>
@@ -205,11 +220,27 @@ function StudentProfileView({ id }: { id: string }) {
           {/* Finance data is absent for teachers (not their responsibility). */}
           {student.invoices && (
             <Card>
-              <h2 className="border-b border-slate-100 px-6 py-4 text-sm font-semibold text-slate-700">Invoices</h2>
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-6 py-3">
+                <h2 className="text-sm font-semibold text-slate-700">
+                  Invoices{student.financeYear ? ` — ${student.financeYear.name}` : ""}
+                </h2>
+                {years.length > 0 && (
+                  <Select
+                    className="!w-48"
+                    value={financeYearId || student.financeYear?.id || ""}
+                    onChange={(e) => setFinanceYearId(e.target.value)}
+                    title="Show this student's billing for another academic year"
+                  >
+                    {years.map((y) => (
+                      <option key={y.id} value={y.id}>{y.name}{y.isActive ? " (current)" : ""}</option>
+                    ))}
+                  </Select>
+                )}
+              </div>
               <DataTable
                 rows={student.invoices}
                 keyFor={(i) => i.id}
-                emptyTitle="No invoices"
+                emptyTitle={`No invoices${student.financeYear ? ` in ${student.financeYear.name}` : ""}`}
                 columns={[
                   { header: "Number", cell: (i) => <span className="font-mono text-xs">{i.number}</span> },
                   { header: "Due", cell: (i) => formatDate(i.dueDate) },
@@ -304,7 +335,7 @@ function StudentProfileView({ id }: { id: string }) {
             ) : docs.length === 0 ? (
               <p className="py-2 text-sm text-slate-400">No documents yet.</p>
             ) : (
-              <ul className="divide-y divide-slate-100">
+              <ul className="list-scroll divide-y divide-slate-100">
                 {docs.map((d) => (
                   <li key={d.id} className="flex items-center gap-2 py-2 text-sm">
                     <Icon name="file" className="h-4 w-4 text-slate-400" />

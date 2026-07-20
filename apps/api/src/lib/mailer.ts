@@ -18,6 +18,9 @@ function smtpConfigured(): boolean {
 }
 
 function getTransporter(): Transporter {
+  // Pooled: welcome emails and payroll blasts reuse a few TLS connections
+  // instead of opening one per message (many shared hosts also cap
+  // concurrent SMTP sessions).
   transporter ??= nodemailer.createTransport({
     host: process.env.SMTP_HOST,
     port: Number(process.env.SMTP_PORT ?? 587),
@@ -25,6 +28,8 @@ function getTransporter(): Transporter {
     auth: process.env.SMTP_USER
       ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
       : undefined,
+    pool: true,
+    maxConnections: 3,
   });
   return transporter;
 }

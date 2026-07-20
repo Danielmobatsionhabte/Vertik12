@@ -8,11 +8,20 @@ import { paymentProvider, stripeProviderOrNull } from "./payment-provider";
 
 // ============================ fee structures ============================
 
-export const listFeeStructures = () =>
+/** Active year's presets by default; pass a year id to view any other year's. */
+export const listFeeStructures = (academicYearId?: string) =>
   prisma.feeStructure.findMany({
-    where: { isActive: true, academicYear: { isActive: true } },
+    where: { isActive: true, ...(academicYearId ? { academicYearId } : { academicYear: { isActive: true } }) },
     orderBy: [{ gradeLevel: "asc" }, { name: "asc" }],
+    include: { academicYear: { select: { id: true, name: true, isActive: true } } },
   });
+
+/** Resolves an academic year into its [start, end] date range (for filters). */
+async function yearRange(academicYearId: string): Promise<{ gte: Date; lte: Date }> {
+  const year = await prisma.academicYear.findUnique({ where: { id: academicYearId } });
+  if (!year) throw ApiError.notFound("Academic year");
+  return { gte: year.startDate, lte: year.endDate };
+}
 
 export const createFeeStructure = (input: {
   name: string; gradeLevel?: string; amount: number; frequency: string;
@@ -54,11 +63,17 @@ function deriveStatus(inv: { items: { amount: number }[]; payments: { amount: nu
   return "ISSUED";
 }
 
-export async function listInvoices(q: PaginationQuery & { status?: string; studentId?: string; gradeLevel?: string }) {
+export async function listInvoices(
+  q: PaginationQuery & { status?: string; studentId?: string; gradeLevel?: string; academicYearId?: string },
+) {
+  // Year filter = invoices issued while that academic year was running, so
+  // each year's billing stays retrievable after the school rolls over.
+  const issued = q.academicYearId ? await yearRange(q.academicYearId) : undefined;
   const where: Prisma.InvoiceWhereInput = {
     ...(q.status ? { status: q.status } : {}),
     ...(q.studentId ? { studentId: q.studentId } : {}),
     ...(q.gradeLevel ? { student: { is: { gradeLevel: q.gradeLevel } } } : {}),
+    ...(issued ? { issueDate: issued } : {}),
     ...(q.search
       ? {
           OR: [
@@ -407,10 +422,14 @@ export async function collectPayment(input: CollectPaymentInput, recordedBy: str
 // ========================= transactions & refunds =========================
 
 /** Paginated payment history (the "Transactions" screen). */
-export async function listPayments(q: PaginationQuery & { status?: string; method?: string }) {
+export async function listPayments(q: PaginationQuery & { status?: string; method?: string; academicYearId?: string }) {
+  // Year filter: payments taken during that academic year (fall back to the
+  // creation date for pending ones, which have no paid date yet).
+  const range = q.academicYearId ? await yearRange(q.academicYearId) : undefined;
   const where: Prisma.PaymentWhereInput = {
     ...(q.status ? { status: q.status } : {}),
     ...(q.method ? { method: q.method } : {}),
+    ...(range ? { OR: [{ paidAt: range }, { paidAt: null, createdAt: range }] } : {}),
     ...(q.search
       ? {
           invoice: {
@@ -507,8 +526,14 @@ export async function refundPayment(id: string, reason: string, refundedBy: stri
  * with its items and payments in JS, which fell over once the school had
  * tens of thousands of invoices.
  */
-export async function financeOverview() {
-  const billable: Prisma.InvoiceWhereInput = { status: { notIn: ["VOID", "DRAFT"] } };
+export async function financeOverview(academicYearId?: string) {
+  // Optional year scope: totals for the invoices issued during that year,
+  // so the dashboard follows the year the viewer switches to.
+  const issued = academicYearId ? await yearRange(academicYearId) : undefined;
+  const billable: Prisma.InvoiceWhereInput = {
+    status: { notIn: ["VOID", "DRAFT"] },
+    ...(issued ? { issueDate: issued } : {}),
+  };
   const [invoicedAgg, collectedAgg, overdueCount, recentPayments] = await Promise.all([
     prisma.invoiceItem.aggregate({ _sum: { amount: true }, where: { invoice: billable } }),
     prisma.payment.aggregate({ _sum: { amount: true }, where: { status: "SUCCEEDED", invoice: billable } }),
@@ -516,6 +541,7 @@ export async function financeOverview() {
     // passed but whose status hasn't been refreshed by a payment yet.
     prisma.invoice.count({
       where: {
+        ...(issued ? { issueDate: issued } : {}),
         OR: [
           { status: "OVERDUE" },
           { status: { in: ["ISSUED", "PARTIALLY_PAID"] }, dueDate: { lt: new Date() } },
@@ -523,7 +549,7 @@ export async function financeOverview() {
       },
     }),
     prisma.payment.findMany({
-      where: { status: "SUCCEEDED" },
+      where: { status: "SUCCEEDED", ...(issued ? { invoice: { is: { issueDate: issued } } } : {}) },
       orderBy: { paidAt: "desc" },
       take: 15,
       include: { invoice: { include: { student: { select: { firstName: true, lastName: true } } } } },
@@ -537,5 +563,83 @@ export async function financeOverview() {
     outstanding: invoiced - collected,
     overdueCount,
     recentPayments,
+  };
+}
+
+/**
+ * Per-academic-year finance report for the admin/registrar/accountant:
+ * every (non-void, non-draft) invoice issued during the chosen year with
+ * totals plus grade / month / status breakdowns. Previous years stay fully
+ * reportable after a rollover. Like the payroll report this materialises
+ * one year's invoices and aggregates in JS — bounded by the year, and only
+ * run on demand from the report screen.
+ */
+export async function financeYearReport(academicYearId: string) {
+  const year = await prisma.academicYear.findUnique({ where: { id: academicYearId } });
+  if (!year) throw ApiError.notFound("Academic year");
+
+  const invoices = await prisma.invoice.findMany({
+    where: { issueDate: { gte: year.startDate, lte: year.endDate }, status: { notIn: ["VOID", "DRAFT"] } },
+    orderBy: { issueDate: "desc" },
+    select: {
+      id: true, number: true, status: true, issueDate: true, dueDate: true, currency: true,
+      student: { select: { id: true, firstName: true, lastName: true, admissionNo: true, gradeLevel: true } },
+      items: { select: { amount: true } },
+      payments: { select: { amount: true, status: true } },
+    },
+  });
+
+  const rows = invoices.map((inv) => {
+    const total = invoiceTotal(inv);
+    const paid = invoicePaid(inv);
+    return {
+      id: inv.id,
+      number: inv.number,
+      status: inv.status,
+      issueDate: inv.issueDate,
+      dueDate: inv.dueDate,
+      currency: inv.currency,
+      student: inv.student,
+      total,
+      paid,
+      balance: total - paid,
+    };
+  });
+
+  const groupBy = <K>(key: (r: (typeof rows)[number]) => K) => {
+    const map = new Map<K, { invoices: number; invoiced: number; collected: number; outstanding: number }>();
+    for (const r of rows) {
+      const k = key(r);
+      const g = map.get(k) ?? { invoices: 0, invoiced: 0, collected: 0, outstanding: 0 };
+      g.invoices += 1;
+      g.invoiced += r.total;
+      g.collected += r.paid;
+      g.outstanding += r.balance;
+      map.set(k, g);
+    }
+    return map;
+  };
+
+  const invoiced = rows.reduce((s, r) => s + r.total, 0);
+  const collected = rows.reduce((s, r) => s + r.paid, 0);
+
+  return {
+    year: { id: year.id, name: year.name, startDate: year.startDate, endDate: year.endDate, isActive: year.isActive },
+    rows,
+    totals: {
+      invoices: rows.length,
+      students: new Set(rows.map((r) => r.student.id)).size,
+      invoiced,
+      collected,
+      outstanding: invoiced - collected,
+    },
+    byGrade: [...groupBy((r) => r.student.gradeLevel).entries()]
+      .sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }))
+      .map(([gradeLevel, g]) => ({ gradeLevel, ...g })),
+    byMonth: [...groupBy((r) => r.issueDate.getUTCFullYear() * 100 + (r.issueDate.getUTCMonth() + 1)).entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([k, g]) => ({ year: Math.floor(k / 100), month: k % 100, ...g })),
+    byStatus: [...groupBy((r) => r.status).entries()]
+      .map(([status, g]) => ({ status, ...g })),
   };
 }

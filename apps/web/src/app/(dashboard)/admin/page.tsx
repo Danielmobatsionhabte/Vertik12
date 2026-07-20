@@ -14,11 +14,12 @@ import { DataTable, Pager } from "@/components/data-table";
  * and school configuration — per the Super Admin responsibility list.
  */
 
-type Tab = "users" | "audit" | "subjects" | "grading" | "settings";
+type Tab = "users" | "audit" | "visitors" | "subjects" | "grading" | "settings";
 
 const TAB_LABELS: Record<Tab, string> = {
   users: "Users",
   audit: "Audit logs",
+  visitors: "Visitors",
   subjects: "Subjects",
   grading: "Grading",
   settings: "School settings",
@@ -42,6 +43,7 @@ export default function AdminPage() {
       </div>
       {tab === "users" && <UsersTab />}
       {tab === "audit" && <AuditTab />}
+      {tab === "visitors" && <VisitorsTab />}
       {tab === "subjects" && <SubjectsTab />}
       {tab === "grading" && <GradingTab />}
       {tab === "settings" && <SettingsTab />}
@@ -194,6 +196,7 @@ function GradingTab() {
             e.g. set A+ at ≥95 and A at ≥90, or remove A+ entirely.
           </p>
         </div>
+        <div className="table-scroll">
         <table className="w-full text-xs">
           <thead>
             <tr className="border-b border-slate-100 text-left text-[11px] uppercase tracking-wide text-slate-500">
@@ -225,6 +228,7 @@ function GradingTab() {
             ))}
           </tbody>
         </table>
+        </div>
         <div className="px-6 py-3">
           <button type="button" className="text-sm font-medium text-brand-600 hover:underline"
             onClick={() => setBands((bs) => [...(bs ?? []), { letter: "", minPercent: 0, points: 0 }])}>
@@ -460,6 +464,85 @@ function AuditTab() {
           { header: "Action", cell: (l) => <span className="font-mono text-xs">{l.action}</span> },
           { header: "Route", cell: (l) => <span className="font-mono text-xs text-slate-500">{l.method} {l.path}</span> },
           { header: "Status", cell: (l) => <Badge tone={l.status < 400 ? "green" : "red"}>{String(l.status)}</Badge> },
+        ]}
+      />
+      {data && <Pager page={data.page} totalPages={data.totalPages} onPage={setPage} />}
+    </Card>
+  );
+}
+
+// ============================== visitors ==============================
+// One row per user per day: who signed in, from which IP/country, and on
+// what browser & device (captured from the day's first request).
+
+interface VisitRow {
+  id: string;
+  date: string;
+  role: string;
+  ip?: string | null;
+  country?: string | null;
+  browser?: string | null;
+  os?: string | null;
+  device?: string | null;
+  userAgent?: string | null;
+  user: { email: string; firstName: string; lastName: string };
+}
+
+function VisitorsTab() {
+  const [data, setData] = useState<Paginated<VisitRow> | null>(null);
+  const [page, setPage] = useState(1);
+  const [search, setSearch] = useState("");
+  const [date, setDate] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const params = new URLSearchParams({ page: String(page), pageSize: "25" });
+    if (search) params.set("search", search);
+    if (date) params.set("date", date);
+    try {
+      setData(await get<Paginated<VisitRow>>(`/admin/visits?${params}`));
+    } finally {
+      setLoading(false);
+    }
+  }, [page, search, date]);
+
+  useEffect(() => {
+    const t = setTimeout(load, search ? 300 : 0);
+    return () => clearTimeout(t);
+  }, [load, search]);
+
+  return (
+    <Card>
+      <div className="flex flex-wrap gap-3 border-b border-slate-100 p-4">
+        <Input placeholder="Filter by name or email…" className="max-w-sm"
+          value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} />
+        <Input type="date" className="!w-44"
+          value={date} onChange={(e) => { setDate(e.target.value); setPage(1); }} />
+      </div>
+      <DataTable
+        loading={loading}
+        rows={data?.items ?? []}
+        keyFor={(v) => v.id}
+        emptyTitle="No visits recorded yet"
+        emptyHint="A row is added the first time each user is active on a given day."
+        columns={[
+          { header: "Date", cell: (v) => <span className="whitespace-nowrap">{formatDate(v.date)}</span> },
+          {
+            header: "Visitor",
+            cell: (v) => (
+              <div>
+                <p className="font-medium text-slate-800">{v.user.firstName} {v.user.lastName}</p>
+                <p className="text-slate-400">{v.user.email}</p>
+              </div>
+            ),
+          },
+          { header: "Role", cell: (v) => <Badge tone="gray">{humanize(v.role)}</Badge> },
+          { header: "IP address", cell: (v) => <span className="font-mono text-xs">{v.ip ?? "—"}</span> },
+          { header: "Country", cell: (v) => v.country ?? "—" },
+          { header: "Browser", cell: (v) => <span title={v.userAgent ?? undefined}>{v.browser ?? "—"}</span> },
+          { header: "OS", cell: (v) => v.os ?? "—" },
+          { header: "Device", cell: (v) => v.device ?? "—" },
         ]}
       />
       {data && <Pager page={data.page} totalPages={data.totalPages} onPage={setPage} />}

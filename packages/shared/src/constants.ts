@@ -195,6 +195,6 @@ export function formatMoney(cents: number, currency = "USD", locale = "en-US"): 
 
 export const BRAND = {
   appName: "Vertik12",
-  poweredBy: "CloudPunkt",
+  poweredBy: "CloudPunkt LLC",
   tagline: "The global Student Information Management System",
 } as const;

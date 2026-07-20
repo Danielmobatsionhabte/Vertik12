@@ -4,6 +4,8 @@ import crypto from "node:crypto";
 import { prisma } from "../../lib/prisma";
 import { ApiError } from "../../lib/errors";
 import { hashPassword } from "../../lib/auth-tokens";
+import { sendMail } from "../../lib/mailer";
+import { staffWelcomeEmail } from "../../lib/email-templates";
 import { paginate, toSkipTake } from "../../lib/pagination";
 
 async function nextStaffNo(): Promise<string> {
@@ -12,14 +14,24 @@ async function nextStaffNo(): Promise<string> {
 }
 
 export async function listStaff(
-  q: PaginationQuery & { staffType?: string; status?: string; role?: string; department?: string },
+  q: PaginationQuery & { staffType?: string; status?: string; role?: string; department?: string; academicYearId?: string; sort?: string },
 ) {
+  // Academic-year filter: everyone on the roster during that year, i.e.
+  // who had joined by the year's end. (Exact leave dates aren't recorded,
+  // so a leaver may still appear in later years — their status shows it.)
+  let joinedBy: Date | undefined;
+  if (q.academicYearId) {
+    const year = await prisma.academicYear.findUnique({ where: { id: q.academicYearId } });
+    if (!year) throw ApiError.notFound("Academic year");
+    joinedBy = year.endDate;
+  }
   // HR search covers the whole employee record: staff number, name, email,
   // designation and department; the dropdown filters narrow by type,
   // employment status, portal role and department.
   const where: Prisma.StaffWhereInput = {
     ...(q.staffType ? { staffType: q.staffType } : {}),
     ...(q.status ? { status: q.status } : {}),
+    ...(joinedBy ? { joinDate: { lte: joinedBy } } : {}),
     ...(q.role ? { user: { is: { role: q.role } } } : {}),
     ...(q.department ? { department: { contains: q.department } } : {}),
     ...(q.search
@@ -47,7 +59,7 @@ export async function listStaff(
     prisma.staff.findMany({
       where,
       ...toSkipTake(q),
-      orderBy: { staffNo: "asc" },
+      orderBy: q.sort === "recent" ? [{ joinDate: "desc" as const }, { staffNo: "desc" as const }] : { staffNo: "asc" },
       include: {
         user: { select: { email: true, firstName: true, lastName: true, role: true, isActive: true } },
         salaryStructure: { select: { basicSalary: true, currency: true } },
@@ -56,6 +68,67 @@ export async function listStaff(
     prisma.staff.count({ where }),
   ]);
   return paginate(items, total, q);
+}
+
+/**
+ * Per-academic-year HR report: the roster during the chosen year (everyone
+ * who had joined by the year's end) with hires made during that year
+ * flagged and counted, plus type/department/status/role summaries. Past
+ * years stay reportable after the school moves to a new year.
+ */
+export async function staffYearReport(
+  academicYearId: string,
+  filters: { staffType?: string; status?: string; department?: string },
+) {
+  const year = await prisma.academicYear.findUnique({ where: { id: academicYearId } });
+  if (!year) throw ApiError.notFound("Academic year");
+
+  const roster = await prisma.staff.findMany({
+    where: {
+      joinDate: { lte: year.endDate },
+      ...(filters.staffType ? { staffType: filters.staffType } : {}),
+      ...(filters.status ? { status: filters.status } : {}),
+      ...(filters.department ? { department: { contains: filters.department } } : {}),
+    },
+    orderBy: { staffNo: "asc" },
+    include: {
+      user: { select: { email: true, firstName: true, lastName: true, role: true, isActive: true } },
+    },
+  });
+
+  const rows = roster.map((s) => ({
+    id: s.id,
+    staffNo: s.staffNo,
+    firstName: s.user.firstName,
+    lastName: s.user.lastName,
+    email: s.user.email,
+    role: s.user.role,
+    staffType: s.staffType,
+    designation: s.designation,
+    department: s.department,
+    status: s.status,
+    joinDate: s.joinDate,
+    joinedThisYear: s.joinDate >= year.startDate && s.joinDate <= year.endDate,
+  }));
+
+  const countBy = (key: (r: (typeof rows)[number]) => string) => {
+    const map = new Map<string, number>();
+    for (const r of rows) map.set(key(r), (map.get(key(r)) ?? 0) + 1);
+    return [...map.entries()].map(([label, count]) => ({ label, count })).sort((a, b) => b.count - a.count);
+  };
+
+  return {
+    year: { id: year.id, name: year.name, startDate: year.startDate, endDate: year.endDate, isActive: year.isActive },
+    rows,
+    totals: {
+      staff: rows.length,
+      newHires: rows.filter((r) => r.joinedThisYear).length,
+      byType: countBy((r) => r.staffType),
+      byDepartment: countBy((r) => r.department ?? "Unassigned"),
+      byStatus: countBy((r) => r.status),
+      byRole: countBy((r) => r.role),
+    },
+  };
 }
 
 export async function getStaff(id: string) {
@@ -99,6 +172,23 @@ export async function createStaff(input: CreateStaffInput) {
       include: { user: { select: { email: true, firstName: true, lastName: true, role: true } } },
     });
   });
+
+  // EMAIL PATH: staff registration → welcome email with sign-in details.
+  // Fire-and-forget: a mail outage must never fail the registration itself.
+  // The generated temporary password is included; an admin-chosen one is not
+  // (the admin hands that over personally).
+  void sendMail({
+    to: staff.user.email,
+    subject: `Welcome to Vertik12 — your staff account`,
+    html: staffWelcomeEmail({
+      firstName: staff.user.firstName,
+      staffNo: staff.staffNo,
+      role: staff.user.role,
+      designation: staff.designation,
+      email: staff.user.email,
+      temporaryPassword: input.password ? undefined : tempPassword,
+    }),
+  }).catch((err) => console.error("[mailer] staff welcome email failed:", err));
 
   return { staff, temporaryPassword: input.password ? undefined : tempPassword };
 }

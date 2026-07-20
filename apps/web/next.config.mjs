@@ -1,6 +1,11 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  // Gzip when self-hosting via `next start`; on S3+CloudFront the edge
+  // compresses instead (enable "Compress objects automatically").
+  compress: true,
+  poweredByHeader: false,
+  productionBrowserSourceMaps: false,
   // The shared package ships raw TypeScript; Next compiles it in-place.
   transpilePackages: ["@vertik12/shared"],
   // Production build for S3 + CloudFront: NEXT_OUTPUT=export produces a

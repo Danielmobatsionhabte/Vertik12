@@ -4,6 +4,8 @@ import crypto from "node:crypto";
 import { prisma } from "../../lib/prisma";
 import { ApiError } from "../../lib/errors";
 import { hashPassword } from "../../lib/auth-tokens";
+import { sendMail } from "../../lib/mailer";
+import { parentPortalEmail, studentWelcomeEmail } from "../../lib/email-templates";
 import { paginate, toSkipTake } from "../../lib/pagination";
 import { assertGradeExists } from "../academics/academics.service";
 import { documentStore } from "../../lib/document-store";
@@ -17,12 +19,20 @@ async function nextAdmissionNo(): Promise<string> {
   return `VRT-${year}-${String(count + 1).padStart(4, "0")}`;
 }
 
-export async function listStudents(q: PaginationQuery & { gradeLevel?: string; status?: string; classRoomId?: string }) {
+export async function listStudents(
+  q: PaginationQuery & { gradeLevel?: string; status?: string; classRoomId?: string; academicYearId?: string; sort?: string },
+) {
+  // Class and academic-year filters both go through the enrollment relation
+  // and must land in ONE `some` clause so they apply to the same enrollment.
+  // The year filter is what makes past years browsable after a rollover.
+  const enrollmentFilter: Prisma.EnrollmentWhereInput = {
+    ...(q.classRoomId ? { classRoomId: q.classRoomId } : {}),
+    ...(q.academicYearId ? { academicYearId: q.academicYearId } : {}),
+  };
   const where: Prisma.StudentWhereInput = {
     ...(q.gradeLevel ? { gradeLevel: q.gradeLevel } : {}),
     ...(q.status ? { status: q.status } : {}),
-    // Filter by section/class (via the student's enrollment).
-    ...(q.classRoomId ? { enrollments: { some: { classRoomId: q.classRoomId } } } : {}),
+    ...(q.classRoomId || q.academicYearId ? { enrollments: { some: enrollmentFilter } } : {}),
     ...(q.search
       ? {
           OR: [
@@ -33,14 +43,22 @@ export async function listStudents(q: PaginationQuery & { gradeLevel?: string; s
         }
       : {}),
   };
+  // Most recently registered first is the default; name/grade stay available.
+  const orderBy: Prisma.StudentOrderByWithRelationInput[] =
+    q.sort === "name"
+      ? [{ lastName: "asc" }, { firstName: "asc" }]
+      : q.sort === "grade"
+        ? [{ gradeLevel: "asc" }, { lastName: "asc" }]
+        : [{ admittedAt: "desc" }, { createdAt: "desc" }];
   const [items, total] = await Promise.all([
     prisma.student.findMany({
       where,
       ...toSkipTake(q),
-      orderBy: [{ gradeLevel: "asc" }, { lastName: "asc" }],
+      orderBy,
       include: {
         enrollments: {
-          where: { academicYear: { isActive: true } },
+          // Show the class of the year being viewed (active year by default).
+          where: q.academicYearId ? { academicYearId: q.academicYearId } : { academicYear: { isActive: true } },
           include: { classRoom: { select: { id: true, name: true } } },
         },
       },
@@ -51,13 +69,91 @@ export async function listStudents(q: PaginationQuery & { gradeLevel?: string; s
 }
 
 /**
+ * Per-academic-year student report for the admin/registrar: every student
+ * enrolled in the chosen year with the class they were in THAT year, plus
+ * summary counts. After a new-year rollover the previous years stay fully
+ * reportable — pick the year, generate, print or export.
+ */
+export async function studentsYearReport(
+  academicYearId: string,
+  filters: { gradeLevel?: string; status?: string },
+) {
+  const year = await prisma.academicYear.findUnique({ where: { id: academicYearId } });
+  if (!year) throw ApiError.notFound("Academic year");
+
+  const enrollments = await prisma.enrollment.findMany({
+    where: {
+      academicYearId,
+      // Grade means the grade of the class in that year, not the student's
+      // current grade (which advances with every rollover).
+      ...(filters.gradeLevel ? { classRoom: { is: { gradeLevel: filters.gradeLevel } } } : {}),
+      ...(filters.status ? { student: { is: { status: filters.status } } } : {}),
+    },
+    include: {
+      student: {
+        select: {
+          id: true, admissionNo: true, firstName: true, lastName: true,
+          gender: true, status: true, admittedAt: true,
+        },
+      },
+      classRoom: { select: { name: true, gradeLevel: true } },
+    },
+    orderBy: [{ classRoom: { gradeLevel: "asc" } }, { classRoom: { name: "asc" } }, { student: { lastName: "asc" } }],
+  });
+
+  const rows = enrollments.map((e) => ({
+    studentId: e.student.id,
+    admissionNo: e.student.admissionNo,
+    firstName: e.student.firstName,
+    lastName: e.student.lastName,
+    gender: e.student.gender,
+    status: e.student.status,
+    admittedAt: e.student.admittedAt,
+    gradeLevel: e.classRoom.gradeLevel,
+    className: e.classRoom.name,
+    enrollmentStatus: e.status,
+  }));
+
+  const countBy = (key: (r: (typeof rows)[number]) => string) => {
+    const map = new Map<string, number>();
+    for (const r of rows) map.set(key(r), (map.get(key(r)) ?? 0) + 1);
+    return [...map.entries()].map(([label, count]) => ({ label, count }));
+  };
+
+  return {
+    year: { id: year.id, name: year.name, startDate: year.startDate, endDate: year.endDate, isActive: year.isActive },
+    rows,
+    totals: {
+      students: rows.length,
+      // Students admitted while this year was running = that year's intake.
+      newAdmissions: rows.filter((r) => r.admittedAt >= year.startDate && r.admittedAt <= year.endDate).length,
+      byGrade: countBy((r) => r.gradeLevel).sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true })),
+      byGender: countBy((r) => r.gender),
+      byStatus: countBy((r) => r.status),
+      byClass: countBy((r) => r.className),
+    },
+  };
+}
+
+/**
  * 360° profile, scoped to what the viewer's role may see:
  *  - TEACHER: no finance data (fees are not a teacher's business)
  *  - ACCOUNTANT: no exam results (grades are not an accountant's business)
+ *
+ * Billing is year-scoped: invoices (and the finance summary computed from
+ * them) show the requested academic year, defaulting to the admin's active
+ * year — so after a rollover the profile shows THIS year's billing, and
+ * previous years stay reachable by passing their id.
  */
-export async function getStudent(id: string, viewerRole: string) {
+export async function getStudent(id: string, viewerRole: string, academicYearId?: string) {
   const canSeeFinance = viewerRole !== "TEACHER";
   const canSeeResults = viewerRole !== "ACCOUNTANT";
+
+  const financeYear = academicYearId
+    ? await prisma.academicYear.findUnique({ where: { id: academicYearId } })
+    : await prisma.academicYear.findFirst({ where: { isActive: true } });
+  if (academicYearId && !financeYear) throw ApiError.notFound("Academic year");
+  const issued = financeYear ? { gte: financeYear.startDate, lte: financeYear.endDate } : undefined;
 
   const student = await prisma.student.findUnique({
     where: { id },
@@ -65,7 +161,14 @@ export async function getStudent(id: string, viewerRole: string) {
       guardians: { include: { guardian: true } },
       enrollments: { include: { classRoom: true, academicYear: true }, orderBy: { createdAt: "desc" } },
       ...(canSeeFinance
-        ? { invoices: { include: { items: true, payments: true }, orderBy: { issueDate: "desc" }, take: 10 } }
+        ? {
+            invoices: {
+              ...(issued ? { where: { issueDate: issued } } : {}),
+              include: { items: true, payments: true },
+              orderBy: { issueDate: "desc" as const },
+              take: 30,
+            },
+          }
         : {}),
       ...(canSeeResults
         ? {
@@ -100,6 +203,10 @@ export async function getStudent(id: string, viewerRole: string) {
     examResults: (student as { examResults?: unknown[] }).examResults ?? null,
     attendanceRate: totalDays === 0 ? null : Math.round((presentDays / totalDays) * 1000) / 10,
     financeSummary: canSeeFinance ? { invoiced, paid, outstanding: invoiced - paid } : null,
+    // Which year the invoices/summary cover, so the UI can label and switch it.
+    financeYear: financeYear
+      ? { id: financeYear.id, name: financeYear.name, isActive: financeYear.isActive }
+      : null,
   };
 }
 
@@ -107,7 +214,7 @@ export async function createStudent(input: CreateStudentInput) {
   const { guardians, classRoomId, ...data } = input;
   await assertGradeExists(input.gradeLevel); // ladder is admin-configured
 
-  return prisma.$transaction(async (tx) => {
+  const { student, className } = await prisma.$transaction(async (tx) => {
     const student = await tx.student.create({
       data: {
         ...data,
@@ -126,6 +233,7 @@ export async function createStudent(input: CreateStudentInput) {
     }
 
     // Enroll into a class for the active academic year, if requested.
+    let className: string | undefined;
     if (classRoomId) {
       const classRoom = await tx.classRoom.findUnique({
         where: { id: classRoomId },
@@ -140,9 +248,31 @@ export async function createStudent(input: CreateStudentInput) {
       await tx.enrollment.create({
         data: { studentId: student.id, classRoomId, academicYearId: classRoom.academicYearId },
       });
+      className = classRoom.name;
     }
-    return student;
+    return { student, className };
   });
+
+  // EMAIL PATH: student registration → admission confirmation, sent to the
+  // student's own email and the primary guardian's (whichever exist).
+  // Fire-and-forget: a mail outage must never fail the registration itself.
+  const primaryGuardianEmail = (guardians.find((g) => g.isPrimary) ?? guardians[0])?.email;
+  const recipients = [...new Set([student.email, primaryGuardianEmail].filter((e): e is string => !!e))];
+  if (recipients.length > 0) {
+    const html = studentWelcomeEmail({
+      firstName: student.firstName,
+      lastName: student.lastName,
+      admissionNo: student.admissionNo,
+      gradeLevel: student.gradeLevel,
+      className,
+    });
+    for (const to of recipients) {
+      void sendMail({ to, subject: `Welcome to Vertik12 — admission confirmed`, html })
+        .catch((err) => console.error("[mailer] student welcome email failed:", err));
+    }
+  }
+
+  return student;
 }
 
 export async function updateStudent(id: string, input: Record<string, unknown>) {
@@ -424,6 +554,14 @@ export async function createGuardianPortalAccount(studentId: string, guardianId:
     });
     return created;
   });
+
+  // EMAIL PATH: parent portal registration → sign-in details (incl. the
+  // temporary password) to the new portal account's address. Fire-and-forget.
+  void sendMail({
+    to: user.email,
+    subject: `Your Vertik12 parent portal access`,
+    html: parentPortalEmail({ firstName: link.guardian.firstName, email: user.email, temporaryPassword: tempPassword }),
+  }).catch((err) => console.error("[mailer] parent portal email failed:", err));
 
   return { email: user.email, temporaryPassword: tempPassword };
 }

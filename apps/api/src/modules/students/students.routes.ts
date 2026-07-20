@@ -17,6 +17,8 @@ const listQuery = paginationSchema.extend({
   gradeLevel: gradeCode.optional(),
   status: z.enum(STUDENT_STATUSES).optional(),
   classRoomId: z.string().optional(), // filter by section/class
+  academicYearId: z.string().optional(), // filter by enrollment year (past years too)
+  sort: z.enum(["recent", "name", "grade"]).optional(), // default: recently registered
 });
 
 // NOTE: registered before "/:id" so the path isn't swallowed by the param route.
@@ -27,6 +29,21 @@ studentsRouter.get(
   asyncHandler(async (req, res) => {
     const q = parsedQuery<{ academicYearId: string; gradeLevel?: string }>(req);
     res.json(ok(await students.unassignedStudents(q.academicYearId, q.gradeLevel)));
+  }),
+);
+
+// Per-year student report (any year, incl. previous ones) for Admin/Registrar.
+studentsRouter.get(
+  "/report",
+  requireRoles("ADMIN", "REGISTRAR"),
+  validateQuery(z.object({
+    academicYearId: z.string().min(1),
+    gradeLevel: gradeCode.optional(),
+    status: z.enum(STUDENT_STATUSES).optional(),
+  })),
+  asyncHandler(async (req, res) => {
+    const { academicYearId, ...filters } = parsedQuery<{ academicYearId: string; gradeLevel?: string; status?: string }>(req);
+    res.json(ok(await students.studentsYearReport(academicYearId, filters)));
   }),
 );
 
@@ -56,7 +73,12 @@ studentsRouter.get(
   requireRoles("ADMIN", "REGISTRAR", "TEACHER", "ACCOUNTANT"),
   asyncHandler(async (req, res) => {
     // Teachers see no finance data; accountants see no exam results.
-    res.json(ok(await students.getStudent(req.params.id, req.user!.role)));
+    // Billing defaults to the active academic year; ?academicYearId=… shows
+    // another year's invoices.
+    const academicYearId = typeof req.query.academicYearId === "string" && req.query.academicYearId
+      ? req.query.academicYearId
+      : undefined;
+    res.json(ok(await students.getStudent(req.params.id, req.user!.role, academicYearId)));
   }),
 );
 

@@ -205,7 +205,7 @@ export default function GradebookPage() {
             ) : roster.length === 0 ? (
               <p className="py-16 text-center text-sm text-slate-400">No students enrolled in this class.</p>
             ) : (
-              <ul className="divide-y divide-slate-100">
+              <ul className="list-scroll divide-y divide-slate-100">
                 {roster.map((s) => (
                   <li key={s.id} className="flex items-center justify-between gap-4 px-5 py-2.5">
                     <div>

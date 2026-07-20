@@ -317,6 +317,8 @@ the CI workflow keeps them honest.
 | DB backups        | automated daily (7-day retention); restore via RDS console snapshots |
 | Enable Stripe     | redeploy the stack adding `"StripeSecretKey=sk_live_…" "StripeWebhookSecret=whsec_…"`; point the Stripe webhook at `<ApiBaseUrl>/finance/payments/webhook` |
 | Enable email      | redeploy adding `"SmtpHost=…" "SmtpUser=…" "SmtpPass=…" "SmtpFrom=…"` (e.g. Amazon SES SMTP credentials) |
+| Rotate SMTP creds | change `SMTP_USER` / `SMTP_PASS` (and `SMTP_FROM`) in `apps/api/.env` locally, or redeploy with new `SmtpUser=…`/`SmtpPass=…` parameters — nothing else references them |
+| Visitor countries | the Administration › Visitors country column reads a CDN geo header (`CloudFront-Viewer-Country` / `CF-IPCountry`). The stack's API is plain API Gateway, so the column stays "—" until you put CloudFront in front of the API with an origin-request policy that forwards viewer headers (managed policy `AllViewerAndCloudFrontHeaders-2022-06`). IP, browser and device are recorded either way |
 | Custom domain     | ACM certificate **in us-east-1** → add `Aliases` + `ViewerCertificate` to the CloudFront distribution in `infra/template.yaml`, update `CORS_ORIGIN` |
 
 **Cost at low traffic (rough):** RDS db.t4g.micro ≈ $13/mo + storage; Lambda,
@@ -341,6 +343,25 @@ until you have real load. Set a budget alarm:
 - [ ] Move the refresh token from localStorage to an httpOnly cookie
       (already noted in `apps/web/src/lib/api.ts`).
 - [ ] RDS Multi-AZ + deletion protection for real high availability.
+
+## Scaling to heavy traffic (tens of thousands of users)
+
+The web tier already scales for free: it is static files on S3 behind
+CloudFront, so page loads never touch your compute. Make sure **"Compress
+objects automatically"** is ON for both CloudFront behaviors (web *and* API) —
+the API skips its own gzip on Lambda and relies on the edge for it.
+
+For the API tier the bottleneck is the database, not Lambda:
+
+1. **Connection pooling is mandatory.** Every concurrent Lambda container
+   opens its own Postgres connections; at thousands of concurrent requests a
+   raw RDS instance runs out. Put **RDS Proxy** in front (or append
+   `?connection_limit=1&pool_timeout=20` to `DATABASE_URL` as a stopgap).
+2. **Raise the Lambda concurrency quota** (default account limit is often
+   1,000) and keep the function memory at 512 MB+ — CPU scales with memory.
+3. **Right-size RDS**: db.t4g.micro is a demo size. For heavy load start at
+   db.r6g.large + Multi-AZ and watch `DatabaseConnections` / CPU.
+4. DynamoDB (documents) and S3 are on-demand — nothing to do there.
 
 ## Known limits of this architecture
 

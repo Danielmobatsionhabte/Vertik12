@@ -37,8 +37,10 @@ financeRouter.use(authenticate);
 // payment amounts (monthly, termly, annual); the registrar and accountant
 // read them to process collections at the preset amounts.
 financeRouter.get("/fee-structures", requireRoles("ADMIN", "REGISTRAR", "ACCOUNTANT"),
-  asyncHandler(async (_req, res) => {
-    res.json(ok(await finance.listFeeStructures()));
+  validateQuery(z.object({ academicYearId: z.string().optional() })),
+  asyncHandler(async (req, res) => {
+    // Defaults to the active year; pass academicYearId to view another year's.
+    res.json(ok(await finance.listFeeStructures(parsedQuery<{ academicYearId?: string }>(req).academicYearId)));
   }));
 
 financeRouter.post("/fee-structures", requireRoles("ADMIN"), validateBody(createFeeStructureSchema),
@@ -57,6 +59,7 @@ const invoiceListQuery = paginationSchema.extend({
   status: z.enum(INVOICE_STATUSES).optional(),
   studentId: z.string().optional(),
   gradeLevel: z.string().optional(), // invoice report filtered by grade
+  academicYearId: z.string().optional(), // invoices issued during that year
 });
 
 // Registrar processes student fee payments, so they can see invoices too.
@@ -123,6 +126,7 @@ financeRouter.post("/payments/confirm",
 const paymentListQuery = paginationSchema.extend({
   status: z.enum(PAYMENT_STATUSES).optional(),
   method: z.enum(PAYMENT_METHODS).optional(),
+  academicYearId: z.string().optional(), // payments taken during that year
 });
 
 financeRouter.get("/payments", requireRoles("ADMIN", "ACCOUNTANT", "REGISTRAR"), validateQuery(paymentListQuery),
@@ -144,6 +148,15 @@ financeRouter.post("/payments/:id/refund", requireRoles(), validateBody(refundPa
 
 // Reporting -------------------------------------------------------------
 financeRouter.get("/overview", requireRoles("ADMIN", "ACCOUNTANT", "REGISTRAR"),
-  asyncHandler(async (_req, res) => {
-    res.json(ok(await finance.financeOverview()));
+  validateQuery(z.object({ academicYearId: z.string().optional() })),
+  asyncHandler(async (req, res) => {
+    res.json(ok(await finance.financeOverview(parsedQuery<{ academicYearId?: string }>(req).academicYearId)));
+  }));
+
+// Per-year finance report (any year, incl. previous ones): totals plus
+// grade / month / status breakdowns over the year's invoices.
+financeRouter.get("/report", requireRoles("ADMIN", "ACCOUNTANT", "REGISTRAR"),
+  validateQuery(z.object({ academicYearId: z.string().min(1) })),
+  asyncHandler(async (req, res) => {
+    res.json(ok(await finance.financeYearReport(parsedQuery<{ academicYearId: string }>(req).academicYearId)));
   }));

@@ -39,7 +39,7 @@ export function DataTable<T>({ columns, rows, keyFor, loading, emptyTitle = "Not
   if (rows.length === 0) return <EmptyState title={emptyTitle} hint={emptyHint} />;
 
   return (
-    <div className="overflow-x-auto">
+    <div className="table-scroll">
       <table className="w-full text-xs">
         <thead>
           <tr className="border-b border-slate-200 text-left text-[11px] uppercase tracking-wide text-slate-500">

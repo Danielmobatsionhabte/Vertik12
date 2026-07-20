@@ -18,6 +18,13 @@ export interface DocumentStore {
   readonly name: string;
   put(collection: string, doc: Record<string, unknown>): Promise<string>; // returns key
   get(collection: string, key: string): Promise<Record<string, unknown> | null>;
+  /**
+   * Write a document under a KNOWN key — used by backup restore so the refs
+   * stored in SQL rows keep pointing at the right files. Overwrites any
+   * existing document with that key. Callers must validate the key shape
+   * (backup files are uploads, not server-generated values).
+   */
+  restore(collection: string, key: string, doc: Record<string, unknown>): Promise<void>;
 }
 
 // ---------- local (dev default): JSON files under apps/api/.docstore ----------
@@ -44,6 +51,11 @@ class LocalDocumentStore implements DocumentStore {
     } catch {
       return null;
     }
+  }
+
+  async restore(collection: string, key: string, doc: Record<string, unknown>) {
+    await fs.promises.mkdir(path.join(this.dir, collection), { recursive: true });
+    await fs.promises.writeFile(this.file(collection, key), JSON.stringify(doc, null, 2), "utf8");
   }
 }
 
@@ -75,6 +87,11 @@ class MongoDocumentStore implements DocumentStore {
     const db = await this.db();
     const doc = await db.collection(collection).findOne({ _key: key });
     return doc ? (doc as Record<string, unknown>) : null;
+  }
+
+  async restore(collection: string, key: string, doc: Record<string, unknown>) {
+    const db = await this.db();
+    await db.collection(collection).replaceOne({ _key: key }, { _key: key, ...doc }, { upsert: true });
   }
 }
 

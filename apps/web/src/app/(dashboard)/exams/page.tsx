@@ -254,7 +254,7 @@ function ExamTypesModal({ types, onClose, onChanged }: {
           These types are offered whenever an assessment is scheduled (Term Exam, Final Exam, Mid Term, …).
           Types in use by existing assessments cannot be removed.
         </p>
-        <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200">
+        <ul className="list-scroll divide-y divide-slate-100 rounded-lg border border-slate-200">
           {types.map((t) => (
             <li key={t.id} className="flex items-center justify-between px-4 py-2.5">
               <span className="text-sm font-medium text-slate-800">{humanize(t.name)}</span>

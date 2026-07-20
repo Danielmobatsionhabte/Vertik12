@@ -183,9 +183,9 @@ export default function PayrollPage() {
               </div>
             </div>
 
-            <div className="max-h-[50vh] overflow-y-auto rounded-lg border border-slate-200">
+            <div className="table-scroll rounded-lg border border-slate-200">
               <table className="w-full text-xs">
-                <thead className="sticky top-0 bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500">
+                <thead className="text-left text-[11px] uppercase tracking-wide text-slate-500">
                   <tr>
                     <th className="px-3 py-1.5 font-medium">Employee</th>
                     <th className="px-3 py-1.5 text-right font-medium">Basic</th>

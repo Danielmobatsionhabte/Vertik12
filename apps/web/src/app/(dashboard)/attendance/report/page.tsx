@@ -132,6 +132,7 @@ export default function AttendanceReportPage() {
           {report.days.length === 0 ? (
             <p className="py-10 text-center text-sm text-slate-400">No attendance was recorded in this period.</p>
           ) : (
+            <div className="table-scroll">
             <table className="w-full border-collapse text-xs">
               <thead>
                 <tr className="border-b-2 border-slate-300 text-left text-slate-500">
@@ -165,6 +166,7 @@ export default function AttendanceReportPage() {
                 ))}
               </tbody>
             </table>
+            </div>
           )}
         </Card>
       )}

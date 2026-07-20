@@ -8,6 +8,13 @@ import { post, setSession, ApiClientError } from "@/lib/api";
 import { Button, Field, Input } from "@/components/ui";
 import { Icon } from "@/components/icons";
 
+// The server enforces the lockout regardless of what the client remembers,
+// so we mirror it in localStorage (keyed by absolute unlock time, not a
+// countdown) purely to keep the UI honest across refreshes/new tabs — without
+// this, reloading during a lockout re-shows the form even though the next
+// submit is guaranteed to 429 again.
+const LOCKOUT_KEY = "vertik12.loginLockout";
+
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("admin@vertik12.school");
@@ -22,6 +29,22 @@ export default function LoginPage() {
   const [lockMessage, setLockMessage] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  function persistLockout(until: number, message: string) {
+    try {
+      localStorage.setItem(LOCKOUT_KEY, JSON.stringify({ until, message }));
+    } catch {
+      // private browsing / storage disabled — the countdown just won't survive a refresh
+    }
+  }
+
+  function clearLockout() {
+    try {
+      localStorage.removeItem(LOCKOUT_KEY);
+    } catch {
+      // ignore
+    }
+  }
+
   useEffect(() => {
     initTheme(); // respect the saved light/dark choice
     const reason = new URLSearchParams(window.location.search).get("reason");
@@ -30,11 +53,35 @@ export default function LoginPage() {
     } else if (reason === "idle") {
       setNotice("You were signed out after 2 hours of inactivity. Please sign in again.");
     }
+
+    // Resume an in-progress lockout after a refresh/new tab instead of
+    // flashing the sign-in form back up.
+    try {
+      const raw = localStorage.getItem(LOCKOUT_KEY);
+      if (raw) {
+        const saved = JSON.parse(raw) as { until: number; message: string };
+        const remaining = Math.ceil((saved.until - Date.now()) / 1000);
+        if (remaining > 0) {
+          setLockedFor(remaining);
+          setLockMessage(saved.message);
+        } else {
+          clearLockout();
+        }
+      }
+    } catch {
+      // malformed/inaccessible storage — fall back to no lockout
+    }
   }, []);
 
   useEffect(() => {
     if (lockedFor <= 0) return;
-    timer.current = setInterval(() => setLockedFor((s) => Math.max(0, s - 1)), 1000);
+    timer.current = setInterval(() => {
+      setLockedFor((s) => {
+        const next = Math.max(0, s - 1);
+        if (next === 0) clearLockout();
+        return next;
+      });
+    }, 1000);
     return () => {
       if (timer.current) clearInterval(timer.current);
     };
@@ -55,6 +102,7 @@ export default function LoginPage() {
         setLockedFor(retry);
         setLockMessage(err.message);
         setError(null);
+        persistLockout(Date.now() + retry * 1000, err.message);
       } else {
         setError(err instanceof ApiClientError ? err.message : "Unable to reach the server. Is the API running?");
       }

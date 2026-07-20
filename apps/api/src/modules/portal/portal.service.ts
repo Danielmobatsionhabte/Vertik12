@@ -24,9 +24,20 @@ async function assertOwnChild(userId: string, studentId: string) {
   if (!link) throw ApiError.forbidden("You do not have access to this student's records");
 }
 
+/**
+ * Billing shown to parents follows the admin's active academic year: after
+ * a rollover the portal shows THIS year's invoices and balance, not old
+ * ones. Returns undefined (no filter) only while no year is active.
+ */
+async function activeYearIssueRange() {
+  const year = await prisma.academicYear.findFirst({ where: { isActive: true } });
+  return year ? { gte: year.startDate, lte: year.endDate } : undefined;
+}
+
 /** Multi-child support: dashboard cards for every linked child. */
 export async function myChildren(userId: string) {
   const guardian = await guardianFor(userId);
+  const issued = await activeYearIssueRange();
   const links = await prisma.studentGuardian.findMany({
     where: { guardianId: guardian.id },
     include: {
@@ -40,7 +51,10 @@ export async function myChildren(userId: string) {
               },
             },
           },
-          invoices: { where: { status: { notIn: ["VOID", "DRAFT"] } }, include: { items: true, payments: true } },
+          invoices: {
+            where: { status: { notIn: ["VOID", "DRAFT"] }, ...(issued ? { issueDate: issued } : {}) },
+            include: { items: true, payments: true },
+          },
         },
       },
     },
@@ -77,6 +91,7 @@ export async function myChildren(userId: string) {
 /** One child's detail: profile, schedule, grades, attendance, invoices. */
 export async function childOverview(userId: string, studentId: string) {
   await assertOwnChild(userId, studentId);
+  const issued = await activeYearIssueRange();
 
   const student = await prisma.student.findUnique({
     where: { id: studentId },
@@ -98,7 +113,7 @@ export async function childOverview(userId: string, studentId: string) {
         take: 30,
       },
       invoices: {
-        where: { status: { not: "DRAFT" } },
+        where: { status: { not: "DRAFT" }, ...(issued ? { issueDate: issued } : {}) },
         include: { items: true, payments: true },
         orderBy: { issueDate: "desc" },
       },

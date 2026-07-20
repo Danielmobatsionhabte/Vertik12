@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { createPayrollRunSchema, emailPayslipSchema, payrollReportQuerySchema, payslipBonusSchema, updatePayslipSchema, upsertSalaryStructureSchema } from "@vertik12/shared";
+import { createPayrollRunSchema, emailPayrollReportSchema, emailPayslipSchema, payrollReportQuerySchema, payslipBonusSchema, updatePayslipSchema, upsertSalaryStructureSchema } from "@vertik12/shared";
 import { authenticate, requireRoles } from "../../middleware/auth";
 import { parsedQuery, validateBody, validateQuery } from "../../middleware/validate";
 import { asyncHandler } from "../../middleware/error-handler";
@@ -27,6 +27,25 @@ payrollRouter.put("/salaries", requireRoles("ADMIN"), validateBody(upsertSalaryS
 payrollRouter.get("/report", requireRoles("ADMIN", "ACCOUNTANT"), validateQuery(payrollReportQuerySchema),
   asyncHandler(async (req, res) => {
     res.json(ok(await payroll.payrollReport(parsedQuery(req))));
+  }));
+
+// Email the filtered payroll report (e.g. the yearly summary) to the signed-in
+// admin or an explicit address.
+payrollRouter.post("/report/email", requireRoles("ADMIN"), validateBody(emailPayrollReportSchema),
+  asyncHandler(async (req, res) => {
+    const { email, ...filters } = req.body;
+    const to = email ?? req.user!.email;
+    const report = await payroll.payrollReport(filters);
+    if (report.totals.payslips === 0) throw ApiError.badRequest("No payslips match these filters — nothing to email");
+    const period = filters.from || filters.to
+      ? `${filters.from ?? "…"} to ${filters.to ?? "present"}`
+      : "all time";
+    const result = await sendMail({
+      to,
+      subject: `Payroll report — ${period}`,
+      html: payroll.payrollReportEmailHtml(report, period),
+    });
+    res.json(ok(result, result.message));
   }));
 
 // Payroll runs ------------------------------------------------------------

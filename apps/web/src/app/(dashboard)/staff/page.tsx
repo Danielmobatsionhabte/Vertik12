@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
+import Link from "next/link";
 import type { Paginated } from "@vertik12/shared";
 import { STAFF_TYPES, STAFF_STATUSES } from "@vertik12/shared";
 import { get, post, put, del, getSession, ApiClientError } from "@/lib/api";
@@ -81,6 +82,8 @@ function StaffStatusModal({ staff, onClose, onSaved }: {
   );
 }
 
+interface YearOption { id: string; name: string; isActive: boolean }
+
 export default function StaffPage() {
   const [data, setData] = useState<Paginated<StaffRow> | null>(null);
   const [page, setPage] = useState(1);
@@ -89,6 +92,8 @@ export default function StaffPage() {
   const [typeFilter, setTypeFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [roleFilter, setRoleFilter] = useState("");
+  const [yearFilter, setYearFilter] = useState("");
+  const [years, setYears] = useState<YearOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   const [form, setForm] = useState(emptyForm);
@@ -113,6 +118,10 @@ export default function StaffPage() {
   const set = (key: keyof typeof emptyForm) => (e: { target: { value: string } }) =>
     setForm((f) => ({ ...f, [key]: e.target.value }));
 
+  useEffect(() => {
+    get<YearOption[]>("/academics/years").then(setYears).catch(() => setYears([]));
+  }, []);
+
   const load = useCallback(async () => {
     setLoading(true);
     const params = new URLSearchParams({ page: String(page), pageSize: "20" });
@@ -120,12 +129,13 @@ export default function StaffPage() {
     if (typeFilter) params.set("staffType", typeFilter);
     if (statusFilter) params.set("status", statusFilter);
     if (roleFilter) params.set("role", roleFilter);
+    if (yearFilter) params.set("academicYearId", yearFilter);
     try {
       setData(await get<Paginated<StaffRow>>(`/staff?${params}`));
     } finally {
       setLoading(false);
     }
-  }, [page, search, typeFilter, statusFilter, roleFilter]);
+  }, [page, search, typeFilter, statusFilter, roleFilter, yearFilter]);
 
   useEffect(() => {
     // Debounce so typing in the search box doesn't fire a request per key.
@@ -161,9 +171,14 @@ export default function StaffPage() {
         subtitle={data ? `${data.total} employee(s)` : undefined}
         actions={
           // Only the admin hires staff; the accountant's view is read-only.
-          ["SUPER_ADMIN", "ADMIN"].includes(getSession()?.user.role ?? "") ? (
-            <Button onClick={() => setShowAdd(true)}>+ Add staff</Button>
-          ) : undefined
+          <div className="flex gap-2">
+            <Link href="/staff/report">
+              <Button variant="secondary">Yearly report</Button>
+            </Link>
+            {["SUPER_ADMIN", "ADMIN"].includes(getSession()?.user.role ?? "") && (
+              <Button onClick={() => setShowAdd(true)}>+ Add staff</Button>
+            )}
+          </div>
         }
       />
 
@@ -194,6 +209,11 @@ export default function StaffPage() {
           <Select className="max-w-[170px]" value={roleFilter} onChange={(e) => { setRoleFilter(e.target.value); setPage(1); }}>
             <option value="">All roles</option>
             {["ADMIN", "REGISTRAR", "TEACHER", "ACCOUNTANT"].map((r) => <option key={r} value={r}>{humanize(r)}</option>)}
+          </Select>
+          {/* Employed during the chosen academic year (previous years too). */}
+          <Select className="max-w-[190px]" value={yearFilter} onChange={(e) => { setYearFilter(e.target.value); setPage(1); }}>
+            <option value="">All academic years</option>
+            {years.map((y) => <option key={y.id} value={y.id}>{y.name}{y.isActive ? " (current)" : ""}</option>)}
           </Select>
         </div>
         <DataTable
@@ -508,7 +528,7 @@ function AssignSubjectsModal({ teacher, onClose }: { teacher: StaffRow; onClose:
           {notice && <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm text-emerald-800">{notice}</div>}
           <ErrorNote message={error} />
 
-          <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200">
+          <ul className="list-scroll divide-y divide-slate-100 rounded-lg border border-slate-200">
             {rows.map((r) => (
               <li key={r.id} className="flex items-center justify-between gap-4 px-4 py-3">
                 <div>

@@ -299,6 +299,11 @@ function CreateClassModal({ onClose, onCreated, onSetUpYears }: {
   const [years, setYears] = useState<Array<{ id: string; name: string; isActive: boolean }> | null>(null);
   const grades = useGrades();
   const [form, setForm] = useState({ gradeLevel: "", section: "A", branch: "", capacity: "30", academicYearId: "" });
+  // "single" adds one class; "copy" clones every class of another year into
+  // the chosen one — the new-year rollover shortcut.
+  const [mode, setMode] = useState<"single" | "copy">("single");
+  const [copyFromId, setCopyFromId] = useState("");
+  const [copyResult, setCopyResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -314,7 +319,11 @@ function CreateClassModal({ onClose, onCreated, onSetUpYears }: {
       .then((ys) => {
         setYears(ys);
         const active = ys.find((y) => y.isActive) ?? ys[0];
-        if (active) setForm((f) => ({ ...f, academicYearId: active.id }));
+        if (active) {
+          setForm((f) => ({ ...f, academicYearId: active.id }));
+          // Copying usually goes FROM the current year INTO a new one.
+          setCopyFromId(active.id);
+        }
       })
       .catch((err) => {
         setYears([]);
@@ -325,11 +334,27 @@ function CreateClassModal({ onClose, onCreated, onSetUpYears }: {
   // Display name derived from grade + section + branch, e.g. "KG — B (West Campus)".
   const name = `${gradeName(grades, form.gradeLevel)} — ${form.section}${form.branch ? ` (${form.branch})` : ""}`;
 
+  const yearName = (id: string) => years?.find((y) => y.id === id)?.name ?? "";
+
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     setSaving(true);
     setError(null);
     try {
+      if (mode === "copy") {
+        const result = await post<{ copied: number; skipped: number; from: string; to: string }>(
+          "/academics/classes/copy",
+          { fromAcademicYearId: copyFromId, toAcademicYearId: form.academicYearId },
+        );
+        // The page grid shows the ACTIVE year only, so report the counts here
+        // — copying into a future year changes nothing visible behind us.
+        setCopyResult(
+          `Copied ${result.copied} class(es) from ${result.from} into ${result.to}` +
+          (result.skipped > 0 ? ` — ${result.skipped} already existed and were left untouched.` : "."),
+        );
+        setSaving(false);
+        return;
+      }
       await post("/academics/classes", {
         name,
         gradeLevel: form.gradeLevel,
@@ -340,31 +365,82 @@ function CreateClassModal({ onClose, onCreated, onSetUpYears }: {
       });
       await onCreated();
     } catch (err) {
-      setError(err instanceof ApiClientError ? err.message : "Failed to create class");
+      setError(err instanceof ApiClientError ? err.message : mode === "copy" ? "Failed to copy classes" : "Failed to create class");
       setSaving(false);
     }
+  }
+
+  // After a successful copy, show the outcome and a single Done action.
+  if (copyResult) {
+    return (
+      <Modal open title="Add a class" onClose={() => void onCreated()}>
+        <div className="space-y-4">
+          <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+            {copyResult}
+          </div>
+          <p className="text-xs text-slate-500">
+            Structure, homeroom teachers and subject/teacher assignments were copied. Students are enrolled
+            separately via Students › &ldquo;Assign to academic year&rdquo;.
+          </p>
+          <div className="flex justify-end">
+            <Button onClick={() => void onCreated()}>Done</Button>
+          </div>
+        </div>
+      </Modal>
+    );
   }
 
   return (
     <Modal open title="Add a class" onClose={onClose}>
       <form onSubmit={onSubmit} className="space-y-4">
-        <div className="grid grid-cols-2 gap-4">
-          <Field label="Grade">
-            <Select value={form.gradeLevel} onChange={(e) => setForm((f) => ({ ...f, gradeLevel: e.target.value }))}>
-              {grades.map((g) => <option key={g.code} value={g.code}>{g.name}</option>)}
-            </Select>
-          </Field>
-          <Field label="Section" hint="A, B, C… — as many per grade as needed">
-            <Input value={form.section} onChange={(e) => setForm((f) => ({ ...f, section: e.target.value.toUpperCase() }))} required maxLength={5} />
-          </Field>
-          <Field label="Branch / campus (optional)" hint="For multi-branch schools">
-            <Input value={form.branch} onChange={(e) => setForm((f) => ({ ...f, branch: e.target.value }))} placeholder="e.g. West Campus" />
-          </Field>
-          <Field label="Capacity">
-            <Input type="number" min={1} value={form.capacity} onChange={(e) => setForm((f) => ({ ...f, capacity: e.target.value }))} />
-          </Field>
+        <div className="flex flex-col gap-2 rounded-lg bg-slate-50 p-3 text-sm text-slate-700">
+          <label className="flex items-center gap-2">
+            <input type="radio" checked={mode === "single"} onChange={() => setMode("single")} />
+            Add a single class
+          </label>
+          <label className="flex items-start gap-2">
+            <input type="radio" className="mt-0.5" checked={mode === "copy"} onChange={() => setMode("copy")} />
+            <span>
+              Copy all classes from another academic year
+              <span className="block text-xs text-slate-500">
+                New-year rollover: clones every class (with homeroom teachers and subject assignments) instead of adding them one by one.
+              </span>
+            </span>
+          </label>
         </div>
-        <Field label="Academic year">
+
+        {mode === "single" && (
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="Grade">
+              <Select value={form.gradeLevel} onChange={(e) => setForm((f) => ({ ...f, gradeLevel: e.target.value }))}>
+                {grades.map((g) => <option key={g.code} value={g.code}>{g.name}</option>)}
+              </Select>
+            </Field>
+            <Field label="Section" hint="A, B, C… — as many per grade as needed">
+              <Input value={form.section} onChange={(e) => setForm((f) => ({ ...f, section: e.target.value.toUpperCase() }))} required maxLength={5} />
+            </Field>
+            <Field label="Branch / campus (optional)" hint="For multi-branch schools">
+              <Input value={form.branch} onChange={(e) => setForm((f) => ({ ...f, branch: e.target.value }))} placeholder="e.g. West Campus" />
+            </Field>
+            <Field label="Capacity">
+              <Input type="number" min={1} value={form.capacity} onChange={(e) => setForm((f) => ({ ...f, capacity: e.target.value }))} />
+            </Field>
+          </div>
+        )}
+
+        {mode === "copy" && (
+          <Field label="Copy classes from">
+            {years === null ? (
+              <p className="py-2 text-sm text-slate-400">Loading academic years…</p>
+            ) : (
+              <Select value={copyFromId} onChange={(e) => setCopyFromId(e.target.value)} required>
+                {years.map((y) => <option key={y.id} value={y.id}>{y.name}{y.isActive ? " (current)" : ""}</option>)}
+              </Select>
+            )}
+          </Field>
+        )}
+
+        <Field label={mode === "copy" ? "Into academic year" : "Academic year"}>
           {years === null ? (
             <p className="py-2 text-sm text-slate-400">Loading academic years…</p>
           ) : years.length === 0 ? (
@@ -380,11 +456,26 @@ function CreateClassModal({ onClose, onCreated, onSetUpYears }: {
             </Select>
           )}
         </Field>
-        <p className="rounded bg-slate-50 px-3 py-2 text-sm text-slate-600">Will be created as: <strong>{name}</strong></p>
+
+        {mode === "single" ? (
+          <p className="rounded bg-slate-50 px-3 py-2 text-sm text-slate-600">Will be created as: <strong>{name}</strong></p>
+        ) : (
+          <p className="rounded bg-slate-50 px-3 py-2 text-sm text-slate-600">
+            Every class of <strong>{yearName(copyFromId) || "…"}</strong> will be copied into{" "}
+            <strong>{yearName(form.academicYearId) || "…"}</strong>. Classes that already exist there (same name) are
+            skipped, and no students are moved.
+          </p>
+        )}
         <ErrorNote message={error} />
         <div className="flex justify-end gap-3">
           <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
-          <Button type="submit" loading={saving} disabled={!form.academicYearId}>Create class</Button>
+          <Button
+            type="submit"
+            loading={saving}
+            disabled={!form.academicYearId || (mode === "copy" && (!copyFromId || copyFromId === form.academicYearId))}
+          >
+            {mode === "copy" ? "Copy classes" : "Create class"}
+          </Button>
         </div>
       </form>
     </Modal>
@@ -579,7 +670,7 @@ function ManageSubjectsModal({ classRow, onClose }: { classRow: ClassRow; onClos
         <div className="flex justify-center py-10 text-brand-600"><Spinner /></div>
       ) : (
         <div className="space-y-5">
-          <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200">
+          <ul className="list-scroll divide-y divide-slate-100 rounded-lg border border-slate-200">
             {classSubjects.map((cs) => (
               <li key={cs.id} className="flex items-center justify-between gap-4 px-4 py-3">
                 <div>
@@ -730,7 +821,7 @@ function ManageYearsModal({ onClose }: { onClose: () => void }) {
             </div>
           )}
 
-          <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200">
+          <ul className="list-scroll divide-y divide-slate-100 rounded-lg border border-slate-200">
             {years.map((y) => (
               <li key={y.id} className="px-4 py-3">
                 <div className="flex items-center justify-between gap-4">
@@ -755,14 +846,28 @@ function ManageYearsModal({ onClose }: { onClose: () => void }) {
                       + Add term
                     </button>
                     {!y.isActive && (
-                      <Button
-                        variant="secondary"
-                        disabled={busy}
-                        title="Makes this the current year school-wide (deactivates the others)"
-                        onClick={() => void run(() => post(`/academics/years/${y.id}/activate`))}
-                      >
-                        Make active
-                      </Button>
+                      <>
+                        <Button
+                          variant="secondary"
+                          disabled={busy}
+                          title="Makes this the current year school-wide (deactivates the others)"
+                          onClick={() => void run(() => post(`/academics/years/${y.id}/activate`))}
+                        >
+                          Make active
+                        </Button>
+                        <button
+                          className="text-xs font-medium text-rose-600 hover:underline"
+                          disabled={busy}
+                          title="Only possible while the year has no classes, enrollments, fee presets or exams"
+                          onClick={() => {
+                            if (window.confirm(`Remove the academic year "${y.name}"? This only works while no data exists in it (no classes, enrollments, fee presets or exams). Its empty terms are removed with it.`)) {
+                              void run(() => del(`/academics/years/${y.id}`));
+                            }
+                          }}
+                        >
+                          Remove
+                        </button>
+                      </>
                     )}
                   </span>
                 </div>

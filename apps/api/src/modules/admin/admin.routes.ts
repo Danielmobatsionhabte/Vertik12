@@ -41,6 +41,13 @@ adminRouter.get("/audit-logs", validateQuery(paginationSchema.extend({ userId: z
     res.json(ok(await admin.listAuditLogs(parsedQuery(req))));
   }));
 
+// Visitors (per user per day: IP, country, browser & device) ---------------
+adminRouter.get("/visits",
+  validateQuery(paginationSchema.extend({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })),
+  asyncHandler(async (req, res) => {
+    res.json(ok(await admin.listVisits(parsedQuery(req))));
+  }));
+
 // School settings ----------------------------------------------------------
 adminRouter.get("/settings",
   asyncHandler(async (_req, res) => {
