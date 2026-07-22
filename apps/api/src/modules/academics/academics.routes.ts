@@ -143,9 +143,12 @@ academicsRouter.get("/teachers/:staffId/subjects", requireRoles("ADMIN"),
   }));
 
 // Timetable ------------------------------------------------------------
+// Kept for existing callers; the full timetabling API (week grid, teaching
+// load, availability, change requests) lives under /schedule. Both paths
+// share one conflict-checked service, so neither can double-book a teacher.
 academicsRouter.post("/timetable", requireRoles("ADMIN", "REGISTRAR"), validateBody(timetableSlotSchema),
   asyncHandler(async (req, res) => {
-    res.status(201).json(ok(await academics.addTimetableSlot(req.body)));
+    res.status(201).json(ok(await academics.addTimetableSlot(req.body, req.user!.sub)));
   }));
 
 academicsRouter.delete("/timetable/:id", requireRoles("ADMIN", "REGISTRAR"),

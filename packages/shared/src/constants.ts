@@ -36,23 +36,27 @@ export const STAFF_ROLES: Role[] = ["SUPER_ADMIN", "ADMIN", "REGISTRAR", "TEACHE
  */
 export const MODULES = [
   "dashboard", "students", "staff", "classes", "attendance", "exams", "assignments",
-  "lessons", "finance", "payroll", "announcements", "messages", "admin", "portal",
+  "lessons", "calendar", "schedule", "finance", "payroll", "announcements", "messages", "admin", "portal",
 ] as const;
 export type ModuleKey = (typeof MODULES)[number];
 
 export const ROLE_MODULES: Record<Role, ModuleKey[]> = {
-  SUPER_ADMIN: ["dashboard", "students", "staff", "classes", "attendance", "exams", "assignments", "lessons", "finance", "payroll", "announcements", "messages", "admin"],
-  ADMIN: ["dashboard", "students", "staff", "classes", "attendance", "exams", "assignments", "lessons", "finance", "payroll", "announcements", "messages"],
+  SUPER_ADMIN: ["dashboard", "students", "staff", "classes", "attendance", "exams", "assignments", "lessons", "calendar", "schedule", "finance", "payroll", "announcements", "messages", "admin"],
+  ADMIN: ["dashboard", "students", "staff", "classes", "attendance", "exams", "assignments", "lessons", "calendar", "schedule", "finance", "payroll", "announcements", "messages"],
   // Registrar processes student fee payments (finance), but not payroll/HR.
   // Lessons is read-only for them (published plans + the calendar view).
-  REGISTRAR: ["dashboard", "students", "classes", "attendance", "exams", "lessons", "finance", "announcements", "messages"],
+  // Timetabling is core registrar work — they build it alongside the admin.
+  REGISTRAR: ["dashboard", "students", "classes", "attendance", "exams", "lessons", "calendar", "schedule", "finance", "announcements", "messages"],
   // Teachers: academics only — no finance, payroll, HR or student admission.
-  TEACHER: ["dashboard", "students", "classes", "attendance", "exams", "assignments", "lessons", "announcements", "messages"],
-  ACCOUNTANT: ["dashboard", "students", "staff", "finance", "payroll", "announcements", "messages"],
+  // Schedule is read-only for them: their own periods, plus the change
+  // request they file when they can't make one.
+  TEACHER: ["dashboard", "students", "classes", "attendance", "exams", "assignments", "lessons", "calendar", "schedule", "announcements", "messages"],
+  ACCOUNTANT: ["dashboard", "students", "staff", "calendar", "finance", "payroll", "announcements", "messages"],
   // Families also get Messages so the school can write to them directly
   // (and they can reply) — with the same unread badge as staff.
-  PARENT: ["portal", "messages", "announcements"],
-  STUDENT: ["portal", "messages", "announcements"],
+  // The school calendar is visible to every stakeholder, in every portal.
+  PARENT: ["portal", "calendar", "messages", "announcements"],
+  STUDENT: ["portal", "calendar", "messages", "announcements"],
 };
 
 /**
@@ -167,6 +171,109 @@ export type AnnouncementAudience = (typeof ANNOUNCEMENT_AUDIENCES)[number];
 
 export const DAYS_OF_WEEK = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"] as const;
 export type DayOfWeek = (typeof DAYS_OF_WEEK)[number];
+
+// ============================== school calendar ==============================
+
+/**
+ * Event types on the school calendar. The category drives the colour every
+ * portal renders the event in (see CALENDAR_CATEGORY_TONES).
+ */
+export const CALENDAR_CATEGORIES = [
+  "TERM", "HOLIDAY", "EXAM", "MEETING", "ACTIVITY", "SPORTS", "TRAINING", "DEADLINE", "OTHER",
+] as const;
+export type CalendarCategory = (typeof CALENDAR_CATEGORIES)[number];
+
+/** Category → badge tone, shared so every portal colours events identically. */
+export const CALENDAR_CATEGORY_TONES: Record<CalendarCategory, string> = {
+  TERM: "brand",
+  HOLIDAY: "green",
+  EXAM: "red",
+  MEETING: "blue",
+  ACTIVITY: "yellow",
+  SPORTS: "green",
+  TRAINING: "blue",
+  DEADLINE: "red",
+  OTHER: "gray",
+};
+
+/** Who a calendar event is addressed to (same shape as announcements). */
+export const CALENDAR_AUDIENCES = ["ALL", "STAFF", "STUDENTS", "PARENTS"] as const;
+export type CalendarAudience = (typeof CALENDAR_AUDIENCES)[number];
+
+/**
+ * Calendar workflow. The administration publishes directly; every other
+ * stakeholder's event lands as PENDING for an admin to approve or reject.
+ */
+export const CALENDAR_EVENT_STATUSES = ["PUBLISHED", "PENDING", "REJECTED"] as const;
+export type CalendarEventStatus = (typeof CALENDAR_EVENT_STATUSES)[number];
+
+/** Roles whose calendar events are published without review. */
+export const CALENDAR_PUBLISHER_ROLES: Role[] = ["SUPER_ADMIN", "ADMIN"];
+
+// ============================== timetabling ==============================
+
+/**
+ * What a teacher is asking for when they can't make a period.
+ *  - CHANGE: move it to another day/time (optionally proposing one)
+ *  - SWAP:   hand it to a named colleague
+ *  - CANCEL: drop the period from their load entirely
+ */
+export const SCHEDULE_REQUEST_KINDS = ["CHANGE", "SWAP", "CANCEL"] as const;
+export type ScheduleRequestKind = (typeof SCHEDULE_REQUEST_KINDS)[number];
+
+export const SCHEDULE_REQUEST_STATUSES = ["PENDING", "APPROVED", "REJECTED", "CANCELLED"] as const;
+export type ScheduleRequestStatus = (typeof SCHEDULE_REQUEST_STATUSES)[number];
+
+/** Roles that build and approve the timetable. */
+export const SCHEDULE_MANAGER_ROLES: Role[] = ["SUPER_ADMIN", "ADMIN", "REGISTRAR"];
+
+/**
+ * Why a proposed period cannot be placed. The API returns these so the UI
+ * can explain the clash precisely instead of "save failed".
+ */
+export type ScheduleConflictKind = "CLASS" | "TEACHER" | "ROOM";
+
+export interface ScheduleConflict {
+  kind: ScheduleConflictKind;
+  message: string;
+  slotId: string;
+  dayOfWeek: DayOfWeek;
+  startTime: string;
+  endTime: string;
+  className: string;
+  subjectName: string;
+  teacherName: string | null;
+  room: string | null;
+}
+
+// ---------- time helpers (shared so API and web agree exactly) ----------
+
+/** "08:45" → 525 minutes past midnight. Returns NaN for malformed input. */
+export function minutesOfDay(hhmm: string): number {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(hhmm.trim());
+  if (!match) return Number.NaN;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (hours > 23 || minutes > 59) return Number.NaN;
+  return hours * 60 + minutes;
+}
+
+/**
+ * Do two periods on the same day overlap?
+ *
+ * Half-open intervals: a period ending at 09:00 and one starting at 09:00
+ * are back-to-back, not a clash — which is exactly how school periods run.
+ */
+export function periodsOverlap(aStart: string, aEnd: string, bStart: string, bEnd: string): boolean {
+  const [as, ae, bs, be] = [minutesOfDay(aStart), minutesOfDay(aEnd), minutesOfDay(bStart), minutesOfDay(bEnd)];
+  if ([as, ae, bs, be].some(Number.isNaN)) return false;
+  return as < be && bs < ae;
+}
+
+/** "08:00"–"08:45" → "08:00 — 08:45". */
+export function formatPeriod(startTime: string, endTime: string): string {
+  return `${startTime} — ${endTime}`;
+}
 
 /** Letter grade bands used for report cards. Percentage lower bounds, checked in order. */
 export const GRADE_BANDS: ReadonlyArray<{ letter: string; min: number; points: number }> = [

@@ -30,9 +30,10 @@ async function main() {
   const tables = [
     "payslip", "payrollRun", "salaryStructure", "payment", "invoiceItem", "invoice", "feeStructure",
     "assignmentSubmission", "assignment", "resultSubmission", "examType",
-    "examResult", "exam", "attendanceRecord", "timetableSlot", "classSubject", "enrollment",
+    "examResult", "exam", "attendanceRecord", "scheduleChangeRequest", "timetableSlot",
+    "calendarEvent", "classSubject", "enrollment",
     "announcement", "studentGuardian", "guardian", "student", "classRoom", "term", "subject",
-    "academicYear", "staff", "refreshToken", "auditLog", "schoolSettings",
+    "academicYear", "staff", "refreshToken", "auditLog", "schoolSettings", "mailSettings",
     "message", "gradeBand", "reportCardApproval", "user",
   ] as const;
   for (const t of tables) {
@@ -143,7 +144,9 @@ async function main() {
   }
 
   // ---- class rooms: one section per grade K-12 ----
-  const classRooms = [];
+  // Annotated because the timetable block below reads the array from inside
+  // a closure, where TypeScript's evolving-any inference doesn't reach.
+  const classRooms: Array<Awaited<ReturnType<typeof prisma.classRoom.create>>> = [];
   for (let i = 0; i < GRADES.length; i++) {
     const grade = GRADES[i]!;
     classRooms.push(
@@ -414,6 +417,145 @@ async function main() {
       subject: "Yearly payment discount now 10%",
       body: "FYI — the board approved a 10% discount for families paying the full year in advance. It is configured in School settings and applies automatically when you collect a yearly payment.",
     },
+  });
+
+  // ---- weekly timetable for the four senior classes ----
+  //
+  // Each subject has a single teacher across every class (teacher i teaches
+  // subject i), so a naive grid would double-book them instantly. The
+  // rotation below is a Latin square: on day d, class k takes subject
+  // (k + d + p) mod 4 in period p. At any moment the four classes are on
+  // four different subjects — four different teachers — so the demo data
+  // satisfies the very conflict rules the scheduler enforces.
+  const seniorRooms = ["9", "10", "11", "12"].map((g) => classRooms[GRADES.indexOf(g)]!);
+  const coreSubjects = subjects.slice(0, 4);
+  // 40-minute periods with a 5-minute changeover, starting at 08:00.
+  const periodTime = (p: number) => {
+    const startMinutes = 8 * 60 + p * 45;
+    const hhmm = (total: number) => `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+    return { startTime: hhmm(startMinutes), endTime: hhmm(startMinutes + 40) };
+  };
+  const weekdays = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY"];
+  for (let d = 0; d < weekdays.length; d++) {
+    for (let k = 0; k < seniorRooms.length; k++) {
+      for (let p = 0; p < coreSubjects.length; p++) {
+        const subject = coreSubjects[(k + d + p) % coreSubjects.length]!;
+        await prisma.timetableSlot.create({
+          data: {
+            classRoomId: seniorRooms[k]!.id,
+            subjectId: subject.id,
+            teacherId: pick(teachers, subjects.indexOf(subject)).id,
+            dayOfWeek: weekdays[d]!,
+            ...periodTime(p),
+            room: `Room ${9 + k}`,
+            createdById: registrarUser.id,
+          },
+        });
+      }
+    }
+  }
+  // Friday: the two elective periods. Both belong to teacher1, so they are
+  // deliberately placed in different periods — the same rule, by hand.
+  await prisma.timetableSlot.create({
+    data: {
+      classRoomId: grade10Room.id, subjectId: subjects[4]!.id, teacherId: teachers[0]!.id,
+      dayOfWeek: "FRIDAY", ...periodTime(0), room: "Art Studio", createdById: registrarUser.id,
+      note: "Bring sketchbooks",
+    },
+  });
+  const grade12Room = classRooms[GRADES.indexOf("12")]!;
+  await prisma.timetableSlot.create({
+    data: {
+      classRoomId: grade12Room.id, subjectId: subjects[8]!.id, teacherId: teachers[0]!.id,
+      dayOfWeek: "FRIDAY", ...periodTime(1), room: "Room 12", createdById: registrarUser.id,
+    },
+  });
+
+  // ---- an open schedule change request waiting in the registrar's inbox ----
+  const mondayFirstPeriod = await prisma.timetableSlot.findFirstOrThrow({
+    where: { dayOfWeek: "MONDAY", teacherId: teachers[0]!.id },
+    orderBy: { startTime: "asc" },
+  });
+  await prisma.scheduleChangeRequest.create({
+    data: {
+      slotId: mondayFirstPeriod.id,
+      staffId: teachers[0]!.id,
+      requestedById: teacher1User.id,
+      kind: "CHANGE",
+      reason:
+        "I have a standing departmental meeting first thing on Monday this term and keep arriving late to this period. " +
+        "Friday mid-morning is clear for me — could it move there?",
+      // Deliberately a slot that is genuinely free: the core teachers are
+      // fully booked Monday–Thursday, so Friday is the only workable answer.
+      proposedDayOfWeek: "FRIDAY",
+      proposedStartTime: "09:30",
+      proposedEndTime: "10:10",
+    },
+  });
+
+  // ---- school calendar: term dates, holidays, exams, meetings ----
+  const day = (y: number, m: number, d: number) => new Date(Date.UTC(y, m - 1, d));
+  await prisma.calendarEvent.createMany({
+    data: [
+      {
+        title: "Term 1 begins", category: "TERM", audience: "ALL",
+        startDate: day(2026, 9, 1), endDate: day(2026, 9, 1),
+        description: "First day of the 2026-2027 academic year.",
+        academicYearId: year.id, createdById: admin.id,
+      },
+      {
+        title: "New family orientation", category: "MEETING", audience: "PARENTS",
+        startDate: day(2026, 9, 3), endDate: day(2026, 9, 3),
+        allDay: false, startTime: "09:00", endTime: "11:00", location: "Main hall",
+        description: "Tour of the school, meet the homeroom teachers, and collect the family handbook.",
+        academicYearId: year.id, createdById: admin.id,
+      },
+      {
+        title: "Mid-term break", category: "HOLIDAY", audience: "ALL",
+        startDate: day(2026, 10, 26), endDate: day(2026, 10, 30),
+        description: "School closed. Boarding students travel home on the 25th.",
+        academicYearId: year.id, createdById: admin.id,
+      },
+      {
+        title: "Midterm examinations", category: "EXAM", audience: "ALL",
+        startDate: day(2026, 10, 20), endDate: day(2026, 10, 23),
+        description: "Timetables are published on each class noticeboard a week in advance.",
+        academicYearId: year.id, createdById: admin.id,
+      },
+      {
+        title: "Parent–teacher conferences", category: "MEETING", audience: "PARENTS",
+        startDate: day(2026, 11, 13), endDate: day(2026, 11, 13),
+        allDay: false, startTime: "14:00", endTime: "18:00", location: "Classrooms",
+        description: "Book a fifteen-minute slot with your child's teachers through the portal.",
+        academicYearId: year.id, createdById: admin.id,
+      },
+      {
+        title: "Staff curriculum review", category: "TRAINING", audience: "STAFF",
+        startDate: day(2026, 11, 20), endDate: day(2026, 11, 20),
+        allDay: false, startTime: "15:00", endTime: "17:00", location: "Room 12",
+        academicYearId: year.id, createdById: admin.id,
+      },
+      {
+        title: "Inter-house sports day", category: "SPORTS", audience: "ALL",
+        startDate: day(2026, 12, 4), endDate: day(2026, 12, 4),
+        location: "Sports field", description: "Families welcome. Refreshments sold in aid of the library fund.",
+        academicYearId: year.id, createdById: admin.id,
+      },
+      {
+        title: "Term 1 ends", category: "TERM", audience: "ALL",
+        startDate: day(2026, 12, 18), endDate: day(2026, 12, 18),
+        academicYearId: year.id, createdById: admin.id,
+      },
+      // A teacher's proposal still waiting for the administration — shows
+      // the review queue with something in it on a fresh install.
+      {
+        title: "Grade 10 science museum trip", category: "ACTIVITY", audience: "ALL",
+        startDate: day(2026, 11, 6), endDate: day(2026, 11, 6),
+        allDay: false, startTime: "08:30", endTime: "15:00", location: "National Science Museum",
+        description: "Full-day trip tied to the Term 1 physics unit. Coach booked, two staff chaperones needed.",
+        status: "PENDING", academicYearId: year.id, createdById: teacher1User.id,
+      },
+    ],
   });
 
   // ---- announcements ----

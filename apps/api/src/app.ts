@@ -21,6 +21,8 @@ import { portalRouter } from "./modules/portal/portal.routes";
 import { messagesRouter } from "./modules/messages/messages.routes";
 import { assignmentsRouter } from "./modules/assignments/assignments.routes";
 import { lessonPlansRouter } from "./modules/lesson-plans/lesson-plans.routes";
+import { calendarRouter } from "./modules/calendar/calendar.routes";
+import { scheduleRouter } from "./modules/schedule/schedule.routes";
 import { auditLogger } from "./middleware/audit";
 
 export function createApp() {
@@ -72,6 +74,8 @@ export function createApp() {
   api.use("/messages", messagesRouter);
   api.use("/assignments", assignmentsRouter);
   api.use("/lesson-plans", lessonPlansRouter);
+  api.use("/calendar", calendarRouter);
+  api.use("/schedule", scheduleRouter);
   app.use("/api/v1", api);
 
   app.use((_req, res) => res.status(404).json({ success: false, message: "Route not found" }));

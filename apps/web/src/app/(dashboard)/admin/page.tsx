@@ -14,7 +14,7 @@ import { DataTable, Pager } from "@/components/data-table";
  * and school configuration — per the Super Admin responsibility list.
  */
 
-type Tab = "users" | "audit" | "visitors" | "subjects" | "grading" | "settings";
+type Tab = "users" | "audit" | "visitors" | "subjects" | "grading" | "settings" | "email";
 
 const TAB_LABELS: Record<Tab, string> = {
   users: "Users",
@@ -23,6 +23,7 @@ const TAB_LABELS: Record<Tab, string> = {
   subjects: "Subjects",
   grading: "Grading",
   settings: "School settings",
+  email: "Email",
 };
 
 export default function AdminPage() {
@@ -47,6 +48,7 @@ export default function AdminPage() {
       {tab === "subjects" && <SubjectsTab />}
       {tab === "grading" && <GradingTab />}
       {tab === "settings" && <SettingsTab />}
+      {tab === "email" && <EmailTab />}
     </div>
   );
 }
@@ -649,5 +651,275 @@ function SettingsTab() {
       <ErrorNote message={error} />
       <Button type="submit" loading={saving}>Save settings</Button>
     </form>
+  );
+}
+
+// ============================== email ==============================
+// Each school runs Vertik12 on its own domain and sends from its own mail
+// server, so SMTP is configured here rather than in the deployment's
+// environment. Nothing else in the app needs to change: every welcome,
+// password-reset, invoice and payslip email starts using it immediately.
+
+interface MailSettings {
+  enabled: boolean;
+  host: string | null;
+  port: number;
+  secure: boolean;
+  username: string | null;
+  fromName: string | null;
+  fromEmail: string | null;
+  replyTo: string | null;
+  hasPassword: boolean;
+  effectiveSource: "database" | "environment" | "none";
+  problem: string | null;
+  dedicatedEncryptionKey: boolean;
+  lastTestAt: string | null;
+  lastTestOk: boolean | null;
+  lastTestError: string | null;
+}
+
+/** Common providers, so an admin doesn't have to look up host/port. */
+const MAIL_PRESETS: Record<string, { host: string; port: number; secure: boolean; hint: string }> = {
+  "Google Workspace": { host: "smtp.gmail.com", port: 587, secure: false, hint: "Use a 16-character App Password, not the account password." },
+  "Microsoft 365": { host: "smtp.office365.com", port: 587, secure: false, hint: "The mailbox must have SMTP AUTH enabled by your tenant admin." },
+  "Zoho Mail": { host: "smtp.zoho.com", port: 465, secure: true, hint: "Generate an app-specific password if 2FA is on." },
+  "Amazon SES": { host: "email-smtp.us-east-1.amazonaws.com", port: 587, secure: false, hint: "Use SES SMTP credentials (not your AWS access keys) and verify your domain first." },
+  "SendGrid": { host: "smtp.sendgrid.net", port: 587, secure: false, hint: "The username is literally 'apikey'; the password is your API key." },
+  "Mailgun": { host: "smtp.mailgun.org", port: 587, secure: false, hint: "Use the SMTP credentials shown under your sending domain." },
+};
+
+function EmailTab() {
+  const [form, setForm] = useState<MailSettings | null>(null);
+  const [password, setPassword] = useState("");
+  const [clearPassword, setClearPassword] = useState(false);
+  const [testTo, setTestTo] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(
+    () => get<MailSettings>("/admin/mail-settings").then(setForm).catch((e) => setError(e.message)),
+    [],
+  );
+  useEffect(() => { void load(); }, [load]);
+
+  async function save(e: FormEvent) {
+    e.preventDefault();
+    if (!form) return;
+    setSaving(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const saved = await put<MailSettings>("/admin/mail-settings", {
+        enabled: form.enabled,
+        host: form.host ?? "",
+        port: form.port,
+        secure: form.secure,
+        username: form.username ?? "",
+        // Omitted entirely when untouched, so the stored password survives
+        // an edit to any other field.
+        ...(password ? { password } : {}),
+        ...(clearPassword ? { clearPassword: true } : {}),
+        fromName: form.fromName ?? "",
+        fromEmail: form.fromEmail ?? "",
+        replyTo: form.replyTo ?? "",
+      });
+      setForm(saved);
+      setPassword("");
+      setClearPassword(false);
+      setMessage("Mail server settings saved. New emails will use this server.");
+    } catch (err) {
+      setError(err instanceof ApiClientError ? err.message : "Failed to save mail settings");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function sendTest() {
+    setTesting(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const result = await post<{ message: string; host: string }>("/admin/mail-settings/test", { to: testTo });
+      setMessage(`${result.message} — check that inbox (and the spam folder) to confirm delivery.`);
+      await load(); // refresh the recorded test outcome
+    } catch (err) {
+      setError(err instanceof ApiClientError ? err.message : "Failed to send the test email");
+      await load();
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  if (!form) return <ErrorNote message={error} />;
+
+  const set = <K extends keyof MailSettings>(key: K, value: MailSettings[K]) =>
+    setForm((f) => (f ? { ...f, [key]: value } : f));
+
+  function applyPreset(name: string) {
+    const preset = MAIL_PRESETS[name];
+    if (!preset) return;
+    setForm((f) => (f ? { ...f, host: preset.host, port: preset.port, secure: preset.secure } : f));
+  }
+
+  const activePreset = Object.entries(MAIL_PRESETS).find(([, p]) => p.host === form.host)?.[0];
+
+  const sourceNote =
+    form.effectiveSource === "database"
+      ? { tone: "emerald", text: "Emails are being sent through the server configured below." }
+      : form.effectiveSource === "environment"
+      ? { tone: "amber", text: "Emails are currently sent through the SMTP_* variables set on the server. Configure and enable a mail server below to manage it from here instead." }
+      : { tone: "amber", text: "No mail server is configured — emails are only written to the server log, not delivered. Fill in your school's SMTP details below to start sending." };
+
+  return (
+    <div className="max-w-2xl space-y-6">
+      {/* What is actually in effect right now */}
+      <div
+        className={cx(
+          "rounded-lg border px-4 py-3 text-sm",
+          sourceNote.tone === "emerald" ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800",
+        )}
+      >
+        {sourceNote.text}
+      </div>
+
+      {form.problem && <ErrorNote message={form.problem} />}
+
+      <form onSubmit={save} className="space-y-6">
+        <Card className="space-y-4 p-6">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 className="text-sm font-semibold text-slate-700">Outgoing mail server (SMTP)</h2>
+              <p className="mt-0.5 text-xs text-slate-500">
+                Your school&apos;s own server, so account, invoice and payslip emails come from your domain.
+              </p>
+            </div>
+            <label className="flex shrink-0 items-center gap-2 text-sm text-slate-600">
+              <input type="checkbox" checked={form.enabled} onChange={(e) => set("enabled", e.target.checked)} />
+              Enabled
+            </label>
+          </div>
+
+          <Field label="Provider" hint="Fills in the host and port — or choose Custom and enter your own.">
+            <Select value={activePreset ?? ""} onChange={(e) => applyPreset(e.target.value)}>
+              <option value="">Custom / other</option>
+              {Object.keys(MAIL_PRESETS).map((name) => <option key={name} value={name}>{name}</option>)}
+            </Select>
+          </Field>
+          {activePreset && (
+            <p className="rounded-lg bg-sky-50 px-3 py-2 text-xs text-sky-800">{MAIL_PRESETS[activePreset]!.hint}</p>
+          )}
+
+          <div className="grid gap-4 sm:grid-cols-[1fr_7rem]">
+            <Field label="Host">
+              <Input value={form.host ?? ""} onChange={(e) => set("host", e.target.value)} placeholder="smtp.yourschool.edu" />
+            </Field>
+            <Field label="Port">
+              <Input
+                type="number" min={1} max={65535} value={form.port}
+                onChange={(e) => {
+                  const port = Number(e.target.value);
+                  // 465 is implicit TLS, 587/25 use STARTTLS — keep the
+                  // toggle honest so a wrong combination can't be saved by
+                  // accident (the commonest SMTP misconfiguration there is).
+                  setForm((f) => (f ? { ...f, port, secure: port === 465 } : f));
+                }}
+              />
+            </Field>
+          </div>
+
+          <label className="flex items-center gap-2 text-sm text-slate-600">
+            <input type="checkbox" checked={form.secure} onChange={(e) => set("secure", e.target.checked)} />
+            Use implicit TLS (SSL) — usually only for port 465
+          </label>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Username">
+              <Input value={form.username ?? ""} onChange={(e) => set("username", e.target.value)} autoComplete="off" />
+            </Field>
+            <Field
+              label="Password"
+              hint={form.hasPassword && !password && !clearPassword ? "A password is saved. Leave blank to keep it." : "Stored encrypted; never shown again."}
+            >
+              <Input
+                type="password"
+                value={password}
+                onChange={(e) => { setPassword(e.target.value); setClearPassword(false); }}
+                placeholder={form.hasPassword ? "••••••••  (unchanged)" : ""}
+                autoComplete="new-password"
+              />
+            </Field>
+          </div>
+          {form.hasPassword && (
+            <label className="flex items-center gap-2 text-xs text-slate-500">
+              <input
+                type="checkbox"
+                checked={clearPassword}
+                onChange={(e) => { setClearPassword(e.target.checked); if (e.target.checked) setPassword(""); }}
+              />
+              Remove the saved password (server needs no authentication)
+            </label>
+          )}
+        </Card>
+
+        <Card className="space-y-4 p-6">
+          <h2 className="text-sm font-semibold text-slate-700">Sender identity</h2>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="From name" hint="Shown as the sender">
+              <Input value={form.fromName ?? ""} onChange={(e) => set("fromName", e.target.value)} placeholder="St Mary's Academy" />
+            </Field>
+            <Field label="From address" hint="Must be a mailbox your server may send as">
+              <Input type="email" value={form.fromEmail ?? ""} onChange={(e) => set("fromEmail", e.target.value)} placeholder="no-reply@yourschool.edu" />
+            </Field>
+          </div>
+          <Field label="Reply-to" hint="Optional — where replies should go, e.g. the school office">
+            <Input type="email" value={form.replyTo ?? ""} onChange={(e) => set("replyTo", e.target.value)} placeholder="office@yourschool.edu" />
+          </Field>
+        </Card>
+
+        {message && <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{message}</div>}
+        <ErrorNote message={error} />
+        <Button type="submit" loading={saving}>Save mail settings</Button>
+      </form>
+
+      {/* Proving it works is the whole point — bad SMTP details fail silently otherwise */}
+      <Card className="space-y-4 p-6">
+        <div>
+          <h2 className="text-sm font-semibold text-slate-700">Test delivery</h2>
+          <p className="mt-0.5 text-xs text-slate-500">
+            Connects to the server, authenticates, and sends a real message. Save your settings first.
+          </p>
+        </div>
+        {form.lastTestAt && (
+          <div
+            className={cx(
+              "rounded-lg border px-3 py-2 text-xs",
+              form.lastTestOk ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-rose-200 bg-rose-50 text-rose-700",
+            )}
+          >
+            Last test {formatDate(form.lastTestAt)} — {form.lastTestOk ? "delivered successfully" : `failed: ${form.lastTestError}`}
+          </div>
+        )}
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="min-w-56 flex-1">
+            <Field label="Send a test email to">
+              <Input type="email" value={testTo} onChange={(e) => setTestTo(e.target.value)} placeholder="you@yourschool.edu" />
+            </Field>
+          </div>
+          <Button type="button" variant="secondary" loading={testing} disabled={!testTo} onClick={sendTest}>
+            Send test email
+          </Button>
+        </div>
+      </Card>
+
+      {!form.dedicatedEncryptionKey && (
+        <p className="text-xs text-slate-500">
+          The saved password is encrypted with a key derived from the server&apos;s JWT secret. Set
+          <code className="mx-1 rounded bg-slate-100 px-1.5 py-0.5">MAIL_ENCRYPTION_KEY</code>
+          on the API so rotating JWT secrets does not invalidate it.
+        </p>
+      )}
+    </div>
   );
 }

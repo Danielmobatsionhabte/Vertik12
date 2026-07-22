@@ -1,11 +1,12 @@
 import crypto from "node:crypto";
-import type { PaginationQuery, SchoolSettingsInput } from "@vertik12/shared";
+import { BRAND, type MailSettingsInput, type PaginationQuery, type SchoolSettingsInput } from "@vertik12/shared";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "../../lib/prisma";
 import { ApiError } from "../../lib/errors";
 import { hashPassword } from "../../lib/auth-tokens";
-import { sendMail } from "../../lib/mailer";
-import { accountCreatedEmail, passwordResetEmail } from "../../lib/email-templates";
+import { sendMail, resolveMailConfig, resetMailer, verifyMailConfig } from "../../lib/mailer";
+import { encryptSecret, usingDedicatedKey } from "../../lib/secret-box";
+import { accountCreatedEmail, passwordResetEmail, testEmail } from "../../lib/email-templates";
 import { paginate, toSkipTake } from "../../lib/pagination";
 
 // ============================ user management ============================
@@ -177,4 +178,110 @@ export async function updateSettings(input: SchoolSettingsInput) {
     create: { id: "school", ...data },
     update: data,
   });
+}
+
+// ============================ mail server ============================
+// Singleton row (id = "mail"). Each school runs Vertik12 on its own domain
+// and sends from its own mail server, so SMTP is configured here rather
+// than through deployment environment variables.
+
+/** The stored row, minus the password, plus what is actually in effect. */
+export async function getMailSettings() {
+  const row = await prisma.mailSettings.upsert({
+    where: { id: "mail" },
+    create: { id: "mail" },
+    update: {},
+  });
+  const effective = await resolveMailConfig();
+
+  // The password is write-only: the client is told whether one exists, never
+  // what it is. `passwordEnc` must not appear in the response at all.
+  const { passwordEnc, ...safe } = row;
+  return {
+    ...safe,
+    hasPassword: !!passwordEnc,
+    /** Where a send would go right now: this row, SMTP_* env vars, or nowhere. */
+    effectiveSource: effective?.source ?? "none",
+    /** Set when the row is configured but unusable (e.g. undecryptable password). */
+    problem: effective?.problem ?? null,
+    /** False = secrets are keyed off JWT_ACCESS_SECRET; see lib/secret-box.ts. */
+    dedicatedEncryptionKey: usingDedicatedKey(),
+  };
+}
+
+export async function updateMailSettings(input: MailSettingsInput) {
+  const existing = await prisma.mailSettings.findUnique({ where: { id: "mail" } });
+
+  // Password rules: a new value replaces, `clearPassword` removes, and
+  // omitting it keeps what is stored — so changing the port doesn't force
+  // the admin to retype a password the browser never received.
+  const passwordEnc =
+    input.password ? encryptSecret(input.password)
+    : input.clearPassword ? null
+    : existing?.passwordEnc ?? null;
+
+  const data = {
+    enabled: input.enabled,
+    host: input.host?.trim() || null,
+    port: input.port,
+    secure: input.secure,
+    username: input.username?.trim() || null,
+    passwordEnc,
+    fromName: input.fromName?.trim() || null,
+    fromEmail: input.fromEmail?.trim() || null,
+    replyTo: input.replyTo?.trim() || null,
+  };
+
+  await prisma.mailSettings.upsert({
+    where: { id: "mail" },
+    create: { id: "mail", ...data },
+    update: data,
+  });
+  // The pooled transporter is keyed on the old configuration — drop it so
+  // the next email uses the new server without waiting for a restart.
+  resetMailer();
+  return getMailSettings();
+}
+
+/**
+ * Prove the configuration works: handshake with the server (DNS, TLS, AUTH)
+ * and then actually deliver a message. The outcome is recorded on the row so
+ * the admin screen can show whether email is known-good.
+ */
+export async function sendTestMail(to: string, actor: { name: string; email: string }) {
+  const config = await resolveMailConfig();
+  if (!config) {
+    throw ApiError.badRequest(
+      "No mail server is configured. Enter your SMTP details and save them before sending a test.",
+    );
+  }
+  if (config.problem) throw ApiError.badRequest(config.problem);
+
+  const record = (ok: boolean, error: string | null) =>
+    prisma.mailSettings
+      .upsert({
+        where: { id: "mail" },
+        create: { id: "mail", lastTestAt: new Date(), lastTestOk: ok, lastTestError: error },
+        update: { lastTestAt: new Date(), lastTestOk: ok, lastTestError: error },
+      })
+      .catch(() => undefined); // recording the result must never mask the result itself
+
+  try {
+    // verify() first so a bad host or password reports the real SMTP error
+    // rather than a generic send failure.
+    await verifyMailConfig(config);
+    const result = await sendMail({
+      to,
+      subject: `${BRAND.appName} — test email`,
+      html: testEmail({ requestedBy: actor.name, host: config.host, source: config.source }),
+    });
+    await record(true, null);
+    return { ...result, source: config.source, host: config.host };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown mail server error";
+    await record(false, message);
+    // The admin needs the server's own words to fix a typo or a bad app
+    // password; this route is SUPER_ADMIN-only, so it is safe to relay.
+    throw ApiError.badRequest(`The mail server rejected the connection: ${message}`);
+  }
 }

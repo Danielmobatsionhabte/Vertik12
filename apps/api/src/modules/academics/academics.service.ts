@@ -347,10 +347,9 @@ export async function teachingAssignments(userId: string, role: string) {
 }
 
 // ---------- timetable ----------
+// Timetabling proper (conflict detection, teaching load, change requests)
+// lives in modules/schedule. These two re-exports keep the older
+// /academics/timetable endpoints working while routing them through the
+// same conflict checks — there must be no way to place a clashing period.
 
-export const addTimetableSlot = (input: {
-  classRoomId: string; subjectId: string; teacherId?: string;
-  dayOfWeek: string; startTime: string; endTime: string;
-}) => prisma.timetableSlot.create({ data: input });
-
-export const removeTimetableSlot = (id: string) => prisma.timetableSlot.delete({ where: { id } });
+export { createSlot as addTimetableSlot, deleteSlot as removeTimetableSlot } from "../schedule/schedule.service";

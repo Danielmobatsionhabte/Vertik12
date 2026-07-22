@@ -26,6 +26,11 @@ const envSchema = z.object({
   STRIPE_SECRET_KEY: z.string().optional(),
   STRIPE_WEBHOOK_SECRET: z.string().optional(),
   DEFAULT_CURRENCY: z.string().length(3).default("USD"),
+  // Encrypts secrets the admin stores in the app (the SMTP password).
+  // Optional: falls back to JWT_ACCESS_SECRET, which production already
+  // forces to be a real value. Set it explicitly so rotating the JWT
+  // secrets doesn't invalidate the saved mail password. See lib/secret-box.ts.
+  MAIL_ENCRYPTION_KEY: z.string().min(16).optional(),
 });
 
 export const env = envSchema.parse(process.env);

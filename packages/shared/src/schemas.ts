@@ -3,6 +3,8 @@ import {
   ROLES, GENDERS, STUDENT_STATUSES, STAFF_TYPES, STAFF_STATUSES,
   ATTENDANCE_STATUSES, PAYMENT_METHODS, FEE_FREQUENCIES, ANNOUNCEMENT_AUDIENCES,
   DAYS_OF_WEEK, PAYMENT_PERIODS, EXAM_CATEGORIES, LESSON_PLAN_STATUSES,
+  CALENDAR_CATEGORIES, CALENDAR_AUDIENCES, CALENDAR_EVENT_STATUSES,
+  SCHEDULE_REQUEST_KINDS, minutesOfDay,
 } from "./constants";
 
 /**
@@ -174,14 +176,184 @@ export const assignSubjectSchema = z.object({
   teacherId: id.optional(),
 });
 
-export const timetableSlotSchema = z.object({
-  classRoomId: id,
-  subjectId: id,
-  teacherId: id.optional(),
-  dayOfWeek: z.enum(DAYS_OF_WEEK),
-  startTime: z.string().regex(/^\d{2}:\d{2}$/, "Expected HH:MM"),
-  endTime: z.string().regex(/^\d{2}:\d{2}$/, "Expected HH:MM"),
+/** 24-hour clock time, e.g. "08:00". */
+export const clockTime = z
+  .string()
+  .trim()
+  .regex(/^([01]\d|2[0-3]):([0-5]\d)$/, "Expected a time like 08:00");
+
+export const timetableSlotSchema = z
+  .object({
+    classRoomId: id,
+    subjectId: id,
+    teacherId: id.optional(),
+    dayOfWeek: z.enum(DAYS_OF_WEEK),
+    startTime: clockTime,
+    endTime: clockTime,
+    room: safeText(60, 0).optional(),
+    note: safeText(300, 0).optional(),
+  })
+  // A period that ends before it starts would slip past every overlap check.
+  .refine((v) => minutesOfDay(v.endTime) > minutesOfDay(v.startTime), {
+    message: "The end time must be after the start time",
+    path: ["endTime"],
+  });
+export type TimetableSlotInput = z.infer<typeof timetableSlotSchema>;
+
+/**
+ * Moving an existing period. Every field is optional (the service merges
+ * with the stored slot), so the end-after-start rule is re-checked in the
+ * service against the merged result rather than here.
+ */
+export const updateTimetableSlotSchema = z.object({
+  classRoomId: id.optional(),
+  subjectId: id.optional(),
+  teacherId: id.nullable().optional(),
+  dayOfWeek: z.enum(DAYS_OF_WEEK).optional(),
+  startTime: clockTime.optional(),
+  endTime: clockTime.optional(),
+  room: safeText(60, 0).nullable().optional(),
+  note: safeText(300, 0).nullable().optional(),
 });
+export type UpdateTimetableSlotInput = z.infer<typeof updateTimetableSlotSchema>;
+
+/** Filters for reading the timetable (week grid, teacher load, room usage). */
+export const timetableQuerySchema = z.object({
+  academicYearId: id.optional(), // omit = the active year
+  classRoomId: id.optional(),
+  teacherId: id.optional(),
+  subjectId: id.optional(),
+  dayOfWeek: z.enum(DAYS_OF_WEEK).optional(),
+});
+export type TimetableQuery = z.infer<typeof timetableQuerySchema>;
+
+/**
+ * "Who is free at this time?" — powers the availability picker the
+ * registrar uses when placing or rescheduling a period.
+ */
+export const availabilityQuerySchema = z.object({
+  academicYearId: id.optional(),
+  dayOfWeek: z.enum(DAYS_OF_WEEK),
+  startTime: clockTime,
+  endTime: clockTime,
+  /** Ignore this slot when checking — the one being moved. */
+  excludeSlotId: id.optional(),
+});
+export type AvailabilityQuery = z.infer<typeof availabilityQuerySchema>;
+
+// ---------- schedule change requests ----------
+
+/**
+ * A teacher asking the registrar to move a period they can't make. The
+ * proposed day/time is optional — "any time on Thursday works" is a valid
+ * request, and the registrar decides.
+ */
+export const scheduleChangeRequestSchema = z
+  .object({
+    slotId: id,
+    kind: z.enum(SCHEDULE_REQUEST_KINDS).default("CHANGE"),
+    reason: safeText(1_000),
+    proposedDayOfWeek: z.enum(DAYS_OF_WEEK).optional(),
+    proposedStartTime: clockTime.optional(),
+    proposedEndTime: clockTime.optional(),
+    proposedTeacherId: id.optional(),
+  })
+  .refine((v) => !(v.proposedStartTime && !v.proposedEndTime) && !(v.proposedEndTime && !v.proposedStartTime), {
+    message: "Give both a start and an end time, or neither",
+    path: ["proposedEndTime"],
+  })
+  .refine(
+    (v) => !v.proposedStartTime || !v.proposedEndTime || minutesOfDay(v.proposedEndTime) > minutesOfDay(v.proposedStartTime),
+    { message: "The end time must be after the start time", path: ["proposedEndTime"] },
+  )
+  .refine((v) => v.kind !== "SWAP" || !!v.proposedTeacherId, {
+    message: "Choose the colleague who will cover the period",
+    path: ["proposedTeacherId"],
+  });
+export type ScheduleChangeRequestInput = z.infer<typeof scheduleChangeRequestSchema>;
+
+/**
+ * Registrar/admin decision. Approving a CHANGE applies the move — either
+ * the teacher's proposal or the reviewer's own override — and re-runs the
+ * conflict checks, so an approval can never break the timetable.
+ */
+export const reviewScheduleRequestSchema = z.object({
+  action: z.enum(["APPROVE", "REJECT"]),
+  note: safeText(500, 0).optional(),
+  dayOfWeek: z.enum(DAYS_OF_WEEK).optional(),
+  startTime: clockTime.optional(),
+  endTime: clockTime.optional(),
+  teacherId: id.nullable().optional(),
+  room: safeText(60, 0).nullable().optional(),
+});
+export type ReviewScheduleRequestInput = z.infer<typeof reviewScheduleRequestSchema>;
+
+// ---------- school calendar ----------
+
+/**
+ * A school-calendar event. Dates are inclusive; a single-day event sends
+ * the same date twice (the API defaults endDate to startDate when omitted).
+ */
+export const calendarEventSchema = z
+  .object({
+    title: safeText(200),
+    description: safeText(5_000, 0).optional(),
+    category: z.enum(CALENDAR_CATEGORIES).default("OTHER"),
+    audience: z.enum(CALENDAR_AUDIENCES).default("ALL"),
+    startDate: isoDate,
+    endDate: isoDate.optional(), // omit = single-day event
+    allDay: z.boolean().default(true),
+    startTime: clockTime.optional(),
+    endTime: clockTime.optional(),
+    location: safeText(200, 0).optional(),
+    academicYearId: id.optional(),
+  })
+  .refine((v) => !v.endDate || v.endDate >= v.startDate, {
+    message: "The end date cannot be before the start date",
+    path: ["endDate"],
+  })
+  .refine((v) => v.allDay || (!!v.startTime && !!v.endTime), {
+    message: "A timed event needs a start and an end time",
+    path: ["startTime"],
+  })
+  .refine(
+    (v) => v.allDay || !v.startTime || !v.endTime || minutesOfDay(v.endTime) > minutesOfDay(v.startTime),
+    { message: "The end time must be after the start time", path: ["endTime"] },
+  );
+export type CalendarEventInput = z.infer<typeof calendarEventSchema>;
+
+export const updateCalendarEventSchema = z.object({
+  title: safeText(200).optional(),
+  description: safeText(5_000, 0).nullable().optional(),
+  category: z.enum(CALENDAR_CATEGORIES).optional(),
+  audience: z.enum(CALENDAR_AUDIENCES).optional(),
+  startDate: isoDate.optional(),
+  endDate: isoDate.optional(),
+  allDay: z.boolean().optional(),
+  startTime: clockTime.nullable().optional(),
+  endTime: clockTime.nullable().optional(),
+  location: safeText(200, 0).nullable().optional(),
+  academicYearId: id.nullable().optional(),
+});
+export type UpdateCalendarEventInput = z.infer<typeof updateCalendarEventSchema>;
+
+/** Admin sign-off on an event proposed by a teacher, parent or student. */
+export const reviewCalendarEventSchema = z.object({
+  action: z.enum(["APPROVE", "REJECT"]),
+  note: safeText(500, 0).optional(),
+});
+export type ReviewCalendarEventInput = z.infer<typeof reviewCalendarEventSchema>;
+
+/** Calendar reads are always "everything overlapping this window". */
+export const calendarQuerySchema = z.object({
+  from: isoDate.optional(),
+  to: isoDate.optional(),
+  category: z.enum(CALENDAR_CATEGORIES).optional(),
+  academicYearId: id.optional(),
+  /** Admins only — "PENDING" opens the proposal review queue. */
+  status: z.enum(CALENDAR_EVENT_STATUSES).optional(),
+});
+export type CalendarQuery = z.infer<typeof calendarQuerySchema>;
 
 /**
  * Enrol existing students into a class of a given academic year (bulk).
@@ -492,6 +664,48 @@ export const schoolSettingsSchema = z.object({
   yearlyDiscountPercent: z.coerce.number().min(0).max(100),
 });
 export type SchoolSettingsInput = z.infer<typeof schoolSettingsSchema>;
+
+// ---------- outgoing mail server (Administration › Email) ----------
+
+/**
+ * The school's own SMTP server. Vertik12 is deployed per school, each
+ * sending from its own domain, so this is configured in the app rather
+ * than through environment variables.
+ *
+ * `password` is write-only: reads never return it (they report
+ * `hasPassword` instead), and saving without it keeps the stored one — so
+ * editing the port doesn't force the admin to retype the password.
+ */
+export const mailSettingsSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    host: z.string().trim().max(255).optional().or(z.literal("")),
+    port: z.coerce.number().int().min(1).max(65535).default(587),
+    /** True = implicit TLS (port 465). False = STARTTLS, the 587 default. */
+    secure: z.boolean().default(false),
+    username: z.string().trim().max(255).optional().or(z.literal("")),
+    password: z.string().max(512).optional(),
+    /** Omit to keep the stored password; true to remove it entirely. */
+    clearPassword: z.boolean().optional(),
+    fromName: safeText(100, 0).optional(),
+    fromEmail: email.optional().or(z.literal("")),
+    replyTo: email.optional().or(z.literal("")),
+  })
+  // Turning the switch on without a server would silently swallow every
+  // email, so the two must be consistent before the row is saved.
+  .refine((v) => !v.enabled || !!v.host, {
+    message: "Enter the mail server host before enabling delivery",
+    path: ["host"],
+  })
+  .refine((v) => !v.enabled || !!v.fromEmail, {
+    message: "Enter the address emails are sent from",
+    path: ["fromEmail"],
+  });
+export type MailSettingsInput = z.infer<typeof mailSettingsSchema>;
+
+/** "Send a test email to…" — proves the configuration end to end. */
+export const testMailSchema = z.object({ to: email });
+export type TestMailInput = z.infer<typeof testMailSchema>;
 
 /** Admin › Grading: the whole scale is replaced atomically. */
 export const gradeBandsSchema = z.object({

@@ -1,6 +1,9 @@
 import { Router } from "express";
 import { z } from "zod";
-import { adminUpdateUserSchema, createUserSchema, gradeBandsSchema, paginationSchema, schoolSettingsSchema, ROLES } from "@vertik12/shared";
+import {
+  adminUpdateUserSchema, createUserSchema, gradeBandsSchema, paginationSchema,
+  schoolSettingsSchema, mailSettingsSchema, testMailSchema, ROLES,
+} from "@vertik12/shared";
 import { getGradeScale, setGradeScale } from "../../lib/grading";
 import { authenticate, requireRoles } from "../../middleware/auth";
 import { validateBody, validateQuery, parsedQuery } from "../../middleware/validate";
@@ -57,6 +60,27 @@ adminRouter.get("/settings",
 adminRouter.put("/settings", validateBody(schoolSettingsSchema),
   asyncHandler(async (req, res) => {
     res.json(ok(await admin.updateSettings(req.body), "School settings saved"));
+  }));
+
+// Mail server --------------------------------------------------------------
+// The school's own SMTP server, so each deployment sends from its own
+// domain. The stored password is never returned — reads report whether one
+// is set, and a save without it keeps the existing one.
+adminRouter.get("/mail-settings",
+  asyncHandler(async (_req, res) => {
+    res.json(ok(await admin.getMailSettings()));
+  }));
+
+adminRouter.put("/mail-settings", validateBody(mailSettingsSchema),
+  asyncHandler(async (req, res) => {
+    res.json(ok(await admin.updateMailSettings(req.body), "Mail server settings saved"));
+  }));
+
+// Proves the settings end to end: handshake, authenticate, then deliver.
+adminRouter.post("/mail-settings/test", validateBody(testMailSchema),
+  asyncHandler(async (req, res) => {
+    const result = await admin.sendTestMail(req.body.to, { name: req.user!.name, email: req.user!.email });
+    res.json(ok(result, `Test email sent to ${req.body.to} via ${result.host}`));
   }));
 
 // Grading scale (country-specific letter bands used everywhere grades

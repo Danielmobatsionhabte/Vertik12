@@ -7,6 +7,8 @@
  *  - Super Admin login(s) — email and password stay exactly as they are
  *  - School settings, the grading scale and the exam-type catalogue
  *    (configuration, not data — grading/report cards need them)
+ *  - The mail server settings, so wiping test data never costs the school
+ *    its email configuration
  *
  * Deletes everything else: students, guardians and their portal logins,
  * staff and their logins, classes, academic years/terms, subjects,
@@ -40,7 +42,9 @@ async function main() {
     ["exams", () => prisma.exam.deleteMany()],
     ["report-card approvals", () => prisma.reportCardApproval.deleteMany()],
     ["attendance records", () => prisma.attendanceRecord.deleteMany()],
+    ["schedule change requests", () => prisma.scheduleChangeRequest.deleteMany()],
     ["timetable slots", () => prisma.timetableSlot.deleteMany()],
+    ["calendar events", () => prisma.calendarEvent.deleteMany()],
     ["class-subject assignments", () => prisma.classSubject.deleteMany()],
     ["subjects", () => prisma.subject.deleteMany()],
     ["payments", () => prisma.payment.deleteMany()],

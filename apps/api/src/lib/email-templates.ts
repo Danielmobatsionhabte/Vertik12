@@ -140,3 +140,25 @@ export function passwordResetEmail(p: { firstName: string; email: string; tempor
      <p style="font-size:12px;color:#94a3b8">If you did not expect this, contact your school administrator immediately.</p>`,
   );
 }
+
+/**
+ * Sent by Administration › Email › "Send test email". Arriving in the
+ * inbox — not bouncing, not landing in spam — is the proof the school's
+ * own mail server is wired up correctly.
+ */
+export function testEmail(p: { requestedBy: string; host: string; source: string }): string {
+  return emailLayout(
+    `Your mail server is working`,
+    `<p style="font-size:14px;color:#334155">This is a test message from ${esc(BRAND.appName)}. If you are reading it,
+       the school's outgoing mail server is configured correctly and staff, students and parents will receive their
+       account, invoice and payslip emails.</p>
+     ${detailsTable([
+       ["Mail server", p.host],
+       ["Configuration", p.source === "database" ? "Administration › Email" : "Server environment (SMTP_*)"],
+       ["Requested by", p.requestedBy],
+       ["Sent at", new Date().toUTCString()],
+     ])}
+     <p style="font-size:12px;color:#94a3b8">No action is needed — this message was triggered manually from the
+       administration screen.</p>`,
+  );
+}

@@ -12,10 +12,13 @@
 | --- | --- |
 | **Authentication & RBAC** | JWT access tokens + rotating refresh tokens, 7 roles (`SUPER_ADMIN`, `ADMIN`, `REGISTRAR`, `TEACHER`, `ACCOUNTANT`, `STUDENT`, `PARENT`), per-route role guards driven by a shared role→module matrix |
 | **Administration (Super Admin)** ⚙️ | User management (create, edit roles, activate/deactivate, password resets with session revocation), **audit & activity logs** (every mutating API call recorded automatically), school configuration (profile, branding, currency/timezone, password & session policies) |
+| **Email / Mail server** ✉️ | Each school configures **its own SMTP server in the app** — host, port, TLS, credentials and the sender identity for its own domain — so one deployment per school needs no redeploy to change mail settings. Presets for Google Workspace, Microsoft 365, Zoho, SES, SendGrid and Mailgun; a **"send test email"** that handshakes, authenticates and delivers so a typo is caught at setup; the password is stored **AES-256-GCM encrypted** and never returned by the API. Falls back to `SMTP_*` env vars, then to simulated sends |
 | **Parent Portal** 👪 | Parents sign in and see **only their own children** (multi-child support): per-child dashboard, grades, attendance history, weekly schedule, fee balances, and **online payment** — all view-only apart from paying |
 | **Students** | Admissions with auto admission numbers (`VRT-2026-0001`), guardians, class enrolment, 360° profile (attendance %, finance summary, grades), soft withdrawal |
 | **Staff & HR** | Staff profiles with auto staff numbers, login accounts with generated temp passwords, off-boarding that disables logins |
-| **Academics** | Academic years & terms (one active year), K-12 class rooms with sections/capacity/homeroom teachers, subjects, class-subject-teacher assignment, timetable slots |
+| **Academics** | Academic years & terms (one active year), K-12 class rooms with sections/capacity/homeroom teachers, subjects, class-subject-teacher assignment |
+| **School Calendar** 📅 | One shared calendar every portal reads — term dates, holidays, exam windows, meetings, sports days — audience-targeted (all / staff / students / parents). **Any stakeholder can add to it**: the administration publishes directly, everyone else's entry becomes a proposal in the admin's review queue |
+| **Timetable & Scheduling** 🗓️ | Registrar/admin build the weekly teaching schedule per academic year. Every placement is **conflict-checked** — a class can't be in two lessons at once, a teacher can't be in two rooms at once, and a room can't host two classes at once. Teachers see their own week and teaching load, and file a **change request** ("I can't make Tuesday 10:00") that the registrar approves — approving *moves the period for real*, re-running the same checks so a decision can never break the grid. Includes a "who is free then?" availability finder |
 | **Attendance** | Daily class register (bulk upsert, correctable), per-student summaries, one record per student per day enforced by the DB |
 | **Exams & Grades** | Weighted exams per term, bulk mark entry with server-computed letter grades, report cards with weighted subject averages and GPA |
 | **Finance / Payments** 💳 | Fee structures (per grade / frequency), single + bulk invoicing per grade, manual payments (cash/bank/cheque/mobile money), **online card checkout via Stripe** with a zero-config mock gateway for demos, webhook confirmation, automatic invoice status (`ISSUED → PARTIALLY_PAID → PAID / OVERDUE`), collections overview |
@@ -133,9 +136,15 @@ GET /finance/overview
 GET /payroll/salaries       PUT /payroll/salaries
 GET|POST /payroll/runs      GET /payroll/runs/:id      POST /payroll/runs/:id/approve|/pay
 GET /payroll/staff/:staffId/payslips
+GET|POST /calendar          GET /calendar/:id|/upcoming|/pending-count   (every role)
+PATCH|DELETE /calendar/:id  POST /calendar/:id/review                    (review = ADMIN)
+GET /schedule/slots|/my|/availability    POST /schedule/check
+POST /schedule/slots        PATCH|DELETE /schedule/slots/:id             (ADMIN|REGISTRAR)
+GET|POST /schedule/requests POST /schedule/requests/:id/review|/cancel
 GET|POST|DELETE /announcements          GET /dashboard/stats
 GET|POST /admin/users       PATCH /admin/users/:id     POST /admin/users/:id/reset-password
 GET /admin/audit-logs       GET|PUT /admin/settings                     (SUPER_ADMIN only)
+GET|PUT /admin/mail-settings          POST /admin/mail-settings/test    (SUPER_ADMIN only)
 GET /portal/children        GET /portal/children/:id   POST /portal/pay (PARENT only)
 ```
 

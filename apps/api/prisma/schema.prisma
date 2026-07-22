@@ -176,10 +176,11 @@ model AcademicYear {
   endDate   DateTime
   isActive  Boolean  @default(false)
 
-  terms         Term[]
-  classRooms    ClassRoom[]
-  enrollments   Enrollment[]
-  feeStructures FeeStructure[]
+  terms          Term[]
+  classRooms     ClassRoom[]
+  enrollments    Enrollment[]
+  feeStructures  FeeStructure[]
+  calendarEvents CalendarEvent[]
 }
 
 model Term {
@@ -354,6 +355,19 @@ model Enrollment {
   @@unique([studentId, academicYearId])
 }
 
+/// One recurring period in the weekly timetable: this class studies this
+/// subject with this teacher, this weekday, from this time to that time.
+///
+/// The academic year is not stored here — it is the year of `classRoom`,
+/// which keeps a single source of truth. Every conflict check therefore
+/// filters on `classRoom.academicYearId`: two slots can only clash if they
+/// belong to the same school year.
+///
+/// Three clashes are refused when a slot is created or moved (see
+/// modules/schedule/schedule.service.ts):
+///   1. the class is already studying something else at that time,
+///   2. the teacher is already teaching another class at that time,
+///   3. the physical room is already taken at that time.
 model TimetableSlot {
   id          String    @id @default(cuid())
   classRoomId String
@@ -363,8 +377,99 @@ model TimetableSlot {
   teacherId   String?
   teacher     Staff?    @relation(fields: [teacherId], references: [id])
   dayOfWeek   String // MONDAY..SUNDAY
-  startTime   String // "08:00"
+  startTime   String // "08:00" (24h HH:MM — string-comparable and sortable)
   endTime     String // "08:45"
+  /// Physical room/lab/hall. Two slots in the same room at the same time clash.
+  room        String?
+  /// Free-text note shown on the teacher's schedule ("double period", "lab week B"…).
+  note        String?
+  createdById String? // user id (admin/registrar) who placed the slot
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  changeRequests ScheduleChangeRequest[]
+
+  // Conflict lookups scan by day, then by the party being checked.
+  @@index([classRoomId, dayOfWeek])
+  @@index([teacherId, dayOfWeek])
+}
+
+/// A teacher asking the registrar/admin to move or drop one of their periods
+/// ("I can't make Tuesday 10:00"). PENDING requests appear in the
+/// registrar's inbox; approving a CHANGE request applies the proposed day/
+/// time to the slot itself — re-running the same conflict checks — so the
+/// timetable can never be broken by an approval.
+model ScheduleChangeRequest {
+  id       String        @id @default(cuid())
+  slotId   String
+  slot     TimetableSlot @relation(fields: [slotId], references: [id], onDelete: Cascade)
+  /// Staff row of the teacher who filed it (the slot's teacher).
+  staffId  String
+  /// User id of the requester — who to notify on review.
+  requestedById String
+  /// CHANGE = move to the proposed day/time · SWAP = hand the period to
+  /// another teacher · CANCEL = drop the period entirely.
+  kind     String        @default("CHANGE")
+  reason   String
+  /// Proposed replacement slot (CHANGE only) — all null = "you decide".
+  proposedDayOfWeek String?
+  proposedStartTime String?
+  proposedEndTime   String?
+  /// Staff id of the covering teacher (SWAP only).
+  proposedTeacherId String?
+  status       String    @default("PENDING") // PENDING | APPROVED | REJECTED | CANCELLED
+  reviewNote   String? // registrar's note on approve/reject
+  reviewedById String? // user id of the reviewing registrar/admin
+  reviewedAt   DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@index([status])
+  @@index([staffId, status])
+}
+
+// ============================== school calendar ==============================
+
+/// The school calendar every portal reads: term dates, holidays, exam
+/// windows, PTA meetings, sports days, staff training…
+///
+/// Anyone signed in can propose an event; only the administration publishes.
+/// An event created by an admin goes straight to PUBLISHED, everyone else's
+/// lands as PENDING in the admin's review queue (same shape as the lesson
+/// plan workflow). `audience` then decides who sees a published event —
+/// parents never see a staff-training day unless it is addressed to ALL.
+model CalendarEvent {
+  id          String   @id @default(cuid())
+  title       String
+  description String?
+  /// HOLIDAY | EXAM | MEETING | ACTIVITY | SPORTS | TERM | TRAINING | DEADLINE | OTHER
+  category    String   @default("OTHER")
+  /// ALL | STAFF | STUDENTS | PARENTS — who the event is for.
+  audience    String   @default("ALL")
+  /// Inclusive date range, both normalized to midnight UTC. A single-day
+  /// event stores the same date twice, so every query is a range overlap.
+  startDate   DateTime
+  endDate     DateTime
+  /// All-day events ignore the times; timed events render "09:00 — 11:30".
+  allDay      Boolean  @default(true)
+  startTime   String? // "09:00"
+  endTime     String? // "11:30"
+  location    String?
+  /// Optional link to the academic year the event belongs to, so archived
+  /// years keep their calendar and the current year filters cleanly.
+  academicYearId String?
+  academicYear   AcademicYear? @relation(fields: [academicYearId], references: [id])
+  /// PUBLISHED (live) | PENDING (proposed, awaiting admin) | REJECTED.
+  status      String   @default("PUBLISHED")
+  reviewNote   String?
+  reviewedById String?
+  reviewedAt   DateTime?
+  createdById String // user id of the author (any role)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // The calendar is always read as "everything overlapping this window".
+  @@index([startDate, endDate])
+  @@index([status])
 }
 
 /// Admin-managed assessment types (Term Exam, Final Exam, Quiz, …).
@@ -640,6 +745,40 @@ model SchoolSettings {
   /// editing when revisions are allowed. Admins are never locked out.
   lessonPlansLocked     Boolean @default(false)
   updatedAt             DateTime @updatedAt
+}
+
+/// Singleton (id = "mail") — the school's own outgoing mail server.
+///
+/// Vertik12 ships to many schools, each sending from their own domain, so
+/// SMTP cannot live in environment variables baked into the deployment.
+/// The Super Admin configures it in the app; the mailer reads this row and
+/// falls back to SMTP_* env vars (then to simulated sends) when it is empty,
+/// so existing installations and local development keep working untouched.
+///
+/// The password is stored as AES-256-GCM ciphertext (see lib/secret-box.ts)
+/// and is never returned by the API — reads report `hasPassword` instead.
+model MailSettings {
+  id       String  @id @default("mail")
+  /// Master switch: off = ignore this row entirely (fall back to env/simulated).
+  enabled  Boolean @default(false)
+  host     String?
+  port     Int     @default(587)
+  /// Implicit TLS from the first byte (port 465). Port 587 uses STARTTLS,
+  /// which nodemailer negotiates automatically with secure = false.
+  secure   Boolean @default(false)
+  username String?
+  /// AES-256-GCM ciphertext. Never leaves the API process.
+  passwordEnc String?
+  /// Envelope sender — the school's own domain, e.g. "St Mary's" <no-reply@stmarys.edu>.
+  fromName  String?
+  fromEmail String?
+  replyTo   String?
+  /// Outcome of the last "send test email", so the admin can see at a glance
+  /// whether delivery actually works rather than guessing.
+  lastTestAt    DateTime?
+  lastTestOk    Boolean?
+  lastTestError String?
+  updatedAt DateTime @updatedAt
 }
 
 /// Admin-configurable grading scale (Super Admin › Grading). Percentages are

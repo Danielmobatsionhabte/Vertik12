@@ -44,6 +44,7 @@ const NAV: Array<{ section: string; links: NavLink[] }> = [
       { href: "/exams", label: "Exams & Grades", icon: "edit", module: "exams" },
       { href: "/assignments", label: "Assignments", icon: "book", module: "assignments" },
       { href: "/lesson-plans", label: "Lesson plans", icon: "book-open", module: "lessons" },
+      { href: "/timetable", label: "Timetable", icon: "calendar-clock", module: "schedule" },
       { href: "/exams/approvals", label: "Result approvals", icon: "check-circle", module: "exams" },
     ],
   },
@@ -57,6 +58,9 @@ const NAV: Array<{ section: string; links: NavLink[] }> = [
   {
     section: "School",
     links: [
+      // The school calendar is the one page every portal shares — staff,
+      // teachers, parents and students all read (and can propose to) it.
+      { href: "/calendar", label: "School calendar", icon: "calendar", module: "calendar" },
       { href: "/messages", label: "Messages", icon: "mail", module: "messages" },
       { href: "/announcements", label: "Announcements", icon: "megaphone", module: "announcements" },
       { href: "/admin", label: "Administration", icon: "settings", module: "admin" },
@@ -86,6 +90,8 @@ const ROUTE_MODULES: Array<{ prefix: string; module: ModuleKey }> = [
   { prefix: "/exams", module: "exams" },
   { prefix: "/assignments", module: "assignments" },
   { prefix: "/lesson-plans", module: "lessons" },
+  { prefix: "/calendar", module: "calendar" },
+  { prefix: "/timetable", module: "schedule" },
   { prefix: "/finance", module: "finance" },
   { prefix: "/payroll", module: "payroll" },
   { prefix: "/announcements", module: "announcements" },
