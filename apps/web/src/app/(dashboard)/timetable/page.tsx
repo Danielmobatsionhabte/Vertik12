@@ -101,16 +101,18 @@ export default function TimetablePage() {
 
   return (
     <div>
-      <PageHeader
-        title="Timetable"
-        subtitle={
-          isManager
-            ? "Build the weekly schedule — clashes with a class, a teacher or a room are refused"
-            : "Your teaching week. Can't make a period? Ask the registrar to move it."
-        }
-      />
+      <div className="print:hidden">
+        <PageHeader
+          title="Timetable"
+          subtitle={
+            isManager
+              ? "Build the weekly schedule — clashes with a class, a teacher or a room are refused"
+              : "Your teaching week. Can't make a period? Ask the registrar to move it."
+          }
+        />
+      </div>
 
-      <div className="mb-4 flex gap-2 border-b border-slate-200">
+      <div className="mb-4 flex gap-2 border-b border-slate-200 print:hidden">
         {([["grid", isManager ? "Weekly schedule" : "My week"], ["requests", "Change requests"]] as const).map(([key, label]) => (
           <button
             key={key}
@@ -134,6 +136,42 @@ export default function TimetablePage() {
         ? isManager ? <ScheduleBuilder onRequestsChanged={refreshPending} /> : <MyWeek onRequestFiled={refreshPending} />
         : <RequestList isManager={isManager} onReviewed={refreshPending} />}
     </div>
+  );
+}
+
+/**
+ * Masthead that only exists on paper. A printed timetable goes on a
+ * staffroom wall or into a teacher's folder, so it has to say — without the
+ * app's chrome around it — whose schedule it is, for which year, and when it
+ * was printed (timetables change; a sheet with no date is a liability).
+ */
+function PrintHeader({ title, subtitle }: { title: string; subtitle?: string }) {
+  const [schoolName, setSchoolName] = useState("");
+
+  useEffect(() => {
+    // Letterhead endpoint — readable by every signed-in role, unlike the
+    // SUPER_ADMIN-only settings screen it is edited from.
+    void get<{ schoolName: string }>("/dashboard/school")
+      .then((s) => setSchoolName(s.schoolName))
+      .catch(() => setSchoolName(""));
+  }, []);
+
+  return (
+    <div className="hidden print:mb-4 print:block">
+      {schoolName && <p className="text-lg font-bold text-slate-900">{schoolName}</p>}
+      <p className="text-base font-semibold text-slate-800">{title}</p>
+      {subtitle && <p className="text-sm text-slate-600">{subtitle}</p>}
+      <p className="mt-1 text-[11px] text-slate-500">Printed {new Date().toLocaleString()}</p>
+    </div>
+  );
+}
+
+/** Print button — same affordance in every timetable view. */
+function PrintButton() {
+  return (
+    <Button variant="secondary" onClick={() => window.print()} className="print:hidden">
+      <Icon name="printer" className="h-4 w-4" /> Print
+    </Button>
   );
 }
 
@@ -193,9 +231,11 @@ function ScheduleBuilder({ onRequestsChanged }: { onRequestsChanged: () => void 
 
   const selectedClass = classes.find((c) => c.id === classId);
 
+  const yearName = years.find((y) => y.id === yearId)?.name;
+
   return (
     <div>
-      <Card className="mb-4 flex flex-wrap items-end gap-3 p-4">
+      <Card className="mb-4 flex flex-wrap items-end gap-3 p-4 print:hidden">
         <div className="w-48">
           <Field label="Academic year">
             <Select value={yearId} onChange={(e) => setYearId(e.target.value)}>
@@ -212,12 +252,18 @@ function ScheduleBuilder({ onRequestsChanged }: { onRequestsChanged: () => void 
           </Field>
         </div>
         <Button onClick={() => setAdding("MONDAY")} disabled={!classId}>+ Add period</Button>
+        <PrintButton />
       </Card>
 
+      <PrintHeader
+        title={`Class timetable — ${selectedClass?.name ?? ""}`}
+        subtitle={yearName ? `Academic year ${yearName}` : undefined}
+      />
+
       {notice && (
-        <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm text-emerald-800">{notice}</div>
+        <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm text-emerald-800 print:hidden">{notice}</div>
       )}
-      <div className="mb-4"><ErrorNote message={error} /></div>
+      <div className="mb-4 print:hidden"><ErrorNote message={error} /></div>
 
       {!classId ? (
         <EmptyState title="No class selected" hint="Create a class for this academic year first (Classes)." />
@@ -231,7 +277,7 @@ function ScheduleBuilder({ onRequestsChanged }: { onRequestsChanged: () => void 
             <button
               key={slot.id}
               onClick={() => setEditing(slot)}
-              className="block w-full rounded-lg border border-slate-200 bg-white p-2 text-left shadow-sm transition-shadow hover:shadow-brand-glow"
+              className="block w-full rounded-lg border border-slate-200 bg-white p-2 text-left shadow-sm transition-shadow hover:shadow-brand-glow print:break-inside-avoid print:rounded-none print:shadow-none"
             >
               <span className="block text-[11px] font-semibold tabular-nums text-brand-700">
                 {formatPeriod(slot.startTime, slot.endTime)}
@@ -501,6 +547,8 @@ function MyWeek({ onRequestFiled }: { onRequestFiled: () => void }) {
   const [requesting, setRequesting] = useState<Slot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const session = getSession();
+  const teacherOwnName = session ? `${session.user.firstName} ${session.user.lastName}` : "";
 
   const load = useCallback(
     () => get<{ slots: Slot[]; load: { periods: number; minutes: number } }>("/schedule/my").then(setData),
@@ -519,10 +567,16 @@ function MyWeek({ onRequestFiled }: { onRequestFiled: () => void }) {
   return (
     <div>
       {notice && (
-        <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm text-emerald-800">{notice}</div>
+        <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm text-emerald-800 print:hidden">{notice}</div>
       )}
 
-      <div className="mb-4 grid gap-4 sm:grid-cols-3">
+      <div className="mb-4 flex justify-end print:hidden">
+        <PrintButton />
+      </div>
+
+      <PrintHeader title={`Teaching timetable — ${teacherOwnName}`} subtitle={`${data.load.periods} periods a week`} />
+
+      <div className="mb-4 grid gap-4 sm:grid-cols-3 print:hidden">
         <StatCard label="Periods a week" value={data.load.periods} />
         <StatCard label="Teaching time" value={`${hours}h ${minutes}m`} detail="Per week" />
         <StatCard
@@ -540,7 +594,7 @@ function MyWeek({ onRequestFiled }: { onRequestFiled: () => void }) {
             key={slot.id}
             onClick={() => setRequesting(slot)}
             title="Ask the registrar to change this period"
-            className="block w-full rounded-lg border border-slate-200 bg-white p-2 text-left shadow-sm transition-shadow hover:shadow-brand-glow"
+            className="block w-full rounded-lg border border-slate-200 bg-white p-2 text-left shadow-sm transition-shadow hover:shadow-brand-glow print:break-inside-avoid print:rounded-none print:shadow-none"
           >
             <span className="block text-[11px] font-semibold tabular-nums text-brand-700">
               {formatPeriod(slot.startTime, slot.endTime)}
@@ -1018,27 +1072,35 @@ function WeekGrid({ slots, renderSlot, emptyHint, onAddDay }: {
   if (slots.length === 0 && !onAddDay) return <EmptyState title="Nothing scheduled" hint={emptyHint} />;
 
   return (
-    <div className="table-scroll">
-      <div className="grid min-w-[52rem] gap-3" style={{ gridTemplateColumns: `repeat(${days.length}, minmax(0, 1fr))` }}>
+    // On screen the week scrolls sideways on narrow viewports; on paper the
+    // min-width and scroll container are dropped so all days fit the sheet.
+    <div className="table-scroll print:overflow-visible">
+      <div
+        className="grid min-w-[52rem] gap-3 print:min-w-0 print:gap-1"
+        style={{ gridTemplateColumns: `repeat(${days.length}, minmax(0, 1fr))` }}
+      >
         {days.map((day) => {
           const daySlots = slots
             .filter((s) => s.dayOfWeek === day)
             .sort((a, b) => a.startTime.localeCompare(b.startTime));
           return (
-            <div key={day} className="rounded-xl border border-slate-200/80 bg-slate-50/60 p-2">
+            <div
+              key={day}
+              className="rounded-xl border border-slate-200/80 bg-slate-50/60 p-2 print:break-inside-avoid print:rounded-none print:bg-white print:p-1"
+            >
               <div className="mb-2 flex items-center justify-between px-1">
                 <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">{dayLabel(day)}</p>
                 {onAddDay && (
                   <button
                     onClick={() => onAddDay(day)}
-                    className="rounded p-0.5 text-slate-400 hover:bg-white hover:text-brand-600"
+                    className="rounded p-0.5 text-slate-400 hover:bg-white hover:text-brand-600 print:hidden"
                     title={`Add a period on ${dayLabel(day)}`}
                   >
                     <Icon name="plus" className="h-3.5 w-3.5" />
                   </button>
                 )}
               </div>
-              <div className="space-y-2">
+              <div className="space-y-2 print:space-y-1">
                 {daySlots.map(renderSlot)}
                 {daySlots.length === 0 && <p className="px-1 py-4 text-center text-[11px] text-slate-400">Free</p>}
               </div>

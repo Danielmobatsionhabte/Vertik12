@@ -25,9 +25,14 @@ export function signRefreshToken(userId: string): string {
   } as SignOptions);
 }
 
-export function verifyAccessToken(token: string): AuthTokenPayload {
+/**
+ * `iat` (issued-at, seconds) comes back alongside the payload we signed. The
+ * auth middleware compares it against the user's session cut-off, so an
+ * administrator resetting a password invalidates tokens already in the wild.
+ */
+export function verifyAccessToken(token: string): AuthTokenPayload & { iat?: number } {
   try {
-    return jwt.verify(token, env.JWT_ACCESS_SECRET) as AuthTokenPayload;
+    return jwt.verify(token, env.JWT_ACCESS_SECRET) as AuthTokenPayload & { iat?: number };
   } catch {
     throw ApiError.unauthorized("Invalid or expired access token");
   }

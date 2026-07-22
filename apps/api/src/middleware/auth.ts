@@ -68,11 +68,30 @@ export function authenticate(req: Request, _res: Response, next: NextFunction) {
   const payload = verifyAccessToken(header.slice("Bearer ".length));
 
   prisma.user
-    .findUnique({ where: { id: payload.sub }, select: { isActive: true, role: true } })
+    .findUnique({ where: { id: payload.sub }, select: { isActive: true, role: true, sessionsRevokedAt: true } })
     .then((user) => {
       if (!user || !user.isActive) {
         // Same error the refresh endpoint uses — the client signs the user out.
         throw ApiError.unauthorized("Account is disabled");
+      }
+      // Sessions cut off by an administrator (password reset, account
+      // disabled, role change). Revoking the refresh token alone would leave
+      // this access token usable until it expired on its own, so the issue
+      // time is checked against the cut-off: the user is out on their very
+      // next request, not in fifteen minutes.
+      //
+      // Both sides are compared in whole seconds because that is all `iat`
+      // records. Comparing a second-resolution `iat` against a millisecond
+      // cut-off would reject a token minted in the *same* second as the
+      // reset — locking the user out of the sign-in they were just told to
+      // perform. Strictly-older wins; same-second is allowed.
+      if (user.sessionsRevokedAt && payload.iat !== undefined) {
+        const revokedAtSeconds = Math.floor(user.sessionsRevokedAt.getTime() / 1000);
+        if (revokedAtSeconds > payload.iat) {
+          throw new ApiError(401, "Your password was reset by an administrator. Please sign in again.", {
+            code: "SESSION_REVOKED",
+          });
+        }
       }
       req.user = { ...payload, role: user.role as Role };
       recordVisit(payload.sub, user.role, req);

@@ -14,6 +14,15 @@ import { StudentPhoto } from "@/components/student-photo";
 import { WebcamCaptureModal } from "@/components/webcam-capture";
 import { Icon } from "@/components/icons";
 
+/** A class of the active year, with its occupancy so a full section shows it. */
+interface SectionOption {
+  id: string;
+  name: string;
+  gradeLevel: string;
+  capacity: number;
+  _count: { enrollments: number };
+}
+
 interface StudentProfile {
   id: string;
   admissionNo: string;
@@ -40,7 +49,7 @@ interface StudentProfile {
   addressLine1?: string | null;
   medicalNotes?: string | null;
   guardians: Array<{ relation: string; isPrimary: boolean; guardian: { id: string; firstName: string; lastName: string; phone: string; email?: string | null; userId?: string | null } }>;
-  enrollments: Array<{ id: string; classRoom: { name: string }; academicYear: { name: string }; status: string }>;
+  enrollments: Array<{ id: string; classRoom: { id: string; name: string }; academicYear: { name: string }; status: string }>;
   invoices: Array<{ id: string; number: string; status: string; dueDate: string; items: Array<{ amount: number }> }> | null;
   /** Every payment taken against this student's invoices for the viewed year. */
   transactions: Array<{
@@ -524,10 +533,16 @@ function EditStudentModal({ student, onClose, onSaved }: {
   onSaved: () => Promise<void>;
 }) {
   const grades = useGrades();
+  // Sections of the active year, so the registrar can move the student
+  // between them (Grade 5 — A → Grade 5 — B) from the same form that owns
+  // the grade level. The list narrows to the grade currently selected,
+  // because the API refuses a section of any other grade.
+  const [classes, setClasses] = useState<SectionOption[]>([]);
   const [form, setForm] = useState({
     firstName: student.firstName,
     lastName: student.lastName,
     gradeLevel: student.gradeLevel,
+    classRoomId: student.enrollments[0]?.classRoom.id ?? "",
     status: student.status,
     phone: student.phone ?? "",
     email: student.email ?? "",
@@ -546,6 +561,23 @@ function EditStudentModal({ student, onClose, onSaved }: {
   const set = (key: keyof typeof form) => (e: { target: { value: string } }) =>
     setForm((f) => ({ ...f, [key]: e.target.value }));
 
+  useEffect(() => {
+    // No academicYearId ⇒ the active year, which is the only one a student
+    // can be moved within from here.
+    get<SectionOption[]>("/academics/classes").then(setClasses).catch(() => setClasses([]));
+  }, []);
+
+  // Changing the grade invalidates the chosen section, so clear it rather
+  // than submit a pair the API will (correctly) reject.
+  const sectionsForGrade = classes.filter((c) => c.gradeLevel === form.gradeLevel);
+  useEffect(() => {
+    setForm((f) =>
+      f.classRoomId && !classes.some((c) => c.id === f.classRoomId && c.gradeLevel === f.gradeLevel)
+        ? { ...f, classRoomId: "" }
+        : f,
+    );
+  }, [classes, form.gradeLevel]);
+
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     setSaving(true);
@@ -553,6 +585,9 @@ function EditStudentModal({ student, onClose, onSaved }: {
     try {
       await patch(`/students/${student.id}`, {
         ...form,
+        // Omitted entirely when blank, so saving other fields never clears
+        // an existing enrollment.
+        classRoomId: form.classRoomId || undefined,
         phone: form.phone || undefined,
         email: form.email || undefined,
         addressLine1: form.addressLine1 || undefined,
@@ -581,6 +616,23 @@ function EditStudentModal({ student, onClose, onSaved }: {
           <Field label="Grade level">
             <Select value={form.gradeLevel} onChange={set("gradeLevel")}>
               {grades.map((g) => <option key={g.code} value={g.code}>{g.name}</option>)}
+            </Select>
+          </Field>
+          <Field
+            label="Class / section"
+            hint={
+              sectionsForGrade.length === 0
+                ? `No sections exist for ${gradeLabel(form.gradeLevel)} in the current year`
+                : "Moving a student here reassigns them in the current academic year"
+            }
+          >
+            <Select value={form.classRoomId} onChange={set("classRoomId")}>
+              <option value="">— Not assigned —</option>
+              {sectionsForGrade.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name} ({c._count.enrollments}/{c.capacity})
+                </option>
+              ))}
             </Select>
           </Field>
           <Field label="Status">

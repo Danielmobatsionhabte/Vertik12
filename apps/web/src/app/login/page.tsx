@@ -48,7 +48,9 @@ export default function LoginPage() {
   useEffect(() => {
     initTheme(); // respect the saved light/dark choice
     const reason = new URLSearchParams(window.location.search).get("reason");
-    if (reason === "session-ended") {
+    if (reason === "password-reset") {
+      setNotice("An administrator reset your password, so you were signed out. Sign in with the temporary password you were sent — you'll then choose your own.");
+    } else if (reason === "session-ended") {
       setNotice("You were signed out: your session ended or your access was changed by an administrator.");
     } else if (reason === "idle") {
       setNotice("You were signed out after 2 hours of inactivity. Please sign in again.");

@@ -36,6 +36,12 @@ model User {
   /// Last time this user opened the Announcements page — announcements
   /// created after this moment count as "unread" for the sidebar badge.
   announcementsSeenAt DateTime?
+  /// Hard cut-off for existing sessions: any access token issued before this
+  /// moment is rejected. Refresh tokens are revoked in the same breath, so an
+  /// administrator resetting a password (or disabling an account) signs the
+  /// user out of every open portal within seconds instead of leaving their
+  /// short-lived access token valid until it expires on its own.
+  sessionsRevokedAt DateTime?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -165,6 +171,40 @@ model Staff {
   timetableSlots  TimetableSlot[]
   salaryStructure SalaryStructure?
   payslips        Payslip[]
+  documents       StaffDocument[]
+}
+
+/// HR paperwork on an employee's file: identification, background/DBS check,
+/// work authorization, qualifications, signed contract…
+///
+/// Uploaded at registration or later from the staff member's management
+/// screen. Bodies live in the document store like student documents; SQL
+/// keeps only the reference plus the metadata HR needs to search and chase.
+///
+/// This is the most sensitive data in the system — a background check result
+/// is not payroll's business — so unlike student documents these are
+/// ADMIN-only to read as well as to write.
+model StaffDocument {
+  id      String @id @default(cuid())
+  staffId String
+  staff   Staff  @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  label   String // e.g. "Passport", "DBS certificate", "Work permit"
+  /// IDENTIFICATION | BACKGROUND_CHECK | WORK_AUTHORIZATION | QUALIFICATION
+  /// | CONTRACT | MEDICAL | REFERENCE | OTHER
+  category String @default("OTHER")
+  fileRef  String // document-store key
+  fileName String
+  fileType String // mime type
+  /// Work permits, DBS checks and medical clearances expire. HR needs to
+  /// chase renewals, so the date is first-class rather than buried in a note.
+  expiresAt    DateTime?
+  note         String?
+  uploadedById String? // user id of the admin who filed it
+  createdAt    DateTime @default(now())
+
+  @@index([staffId])
+  // "What expires in the next 60 days?" scans by date across all staff.
+  @@index([expiresAt])
 }
 
 // ============================== academics ==============================

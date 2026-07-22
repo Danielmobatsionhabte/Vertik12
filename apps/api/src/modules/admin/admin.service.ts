@@ -78,19 +78,37 @@ export async function updateUser(id: string, input: { role?: string; isActive?: 
     data: input,
     select: { id: true, email: true, firstName: true, lastName: true, role: true, isActive: true },
   });
-  // Disabling access or changing role kills existing sessions.
+  // Disabling access or changing role kills existing sessions. The stamp
+  // invalidates access tokens already issued, not just the refresh tokens —
+  // the same immediate sign-out a password reset performs.
   if (input.isActive === false || input.role) {
-    await prisma.refreshToken.updateMany({ where: { userId: id, revokedAt: null }, data: { revokedAt: new Date() } });
+    await prisma.$transaction([
+      prisma.refreshToken.updateMany({ where: { userId: id, revokedAt: null }, data: { revokedAt: new Date() } }),
+      prisma.user.update({ where: { id }, data: { sessionsRevokedAt: new Date() } }),
+    ]);
   }
   return user;
 }
 
-/** Reset a user's password to a generated temporary one and revoke sessions. */
+/**
+ * Reset a user's password to a generated temporary one and end every open
+ * session immediately.
+ *
+ * Revoking refresh tokens alone is not enough: the access token already in
+ * the user's browser stays valid until it expires. Stamping
+ * `sessionsRevokedAt` makes the auth middleware reject those tokens too, so
+ * the portal signs the user out within seconds of the reset — which is what
+ * an administrator resetting a compromised account expects.
+ */
 export async function resetPassword(id: string) {
   const tempPassword = `Vrt-${crypto.randomBytes(6).toString("base64url")}`;
   const user = await prisma.user.update({
     where: { id },
-    data: { passwordHash: await hashPassword(tempPassword), mustChangePassword: true },
+    data: {
+      passwordHash: await hashPassword(tempPassword),
+      mustChangePassword: true,
+      sessionsRevokedAt: new Date(),
+    },
     select: { email: true, firstName: true },
   });
   await prisma.refreshToken.updateMany({ where: { userId: id, revokedAt: null }, data: { revokedAt: new Date() } });

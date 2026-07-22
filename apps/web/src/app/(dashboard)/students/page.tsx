@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import type { Paginated } from "@vertik12/shared";
-import { get, post, getSession, ApiClientError } from "@/lib/api";
+import { get, post, patch, getSession, ApiClientError } from "@/lib/api";
 import { useGrades } from "@/lib/grades";
 import { formatDate, fullName, gradeLabel } from "@/lib/format";
 import { Badge, Button, Card, ErrorNote, Field, Input, Modal, PageHeader, Select, Spinner } from "@/components/ui";
@@ -24,6 +24,8 @@ interface StudentRow {
 
 interface ClassOption { id: string; name: string; gradeLevel: string }
 interface YearOption { id: string; name: string; isActive: boolean }
+/** A class plus its occupancy, so a full section can be shown as full. */
+interface SectionOption extends ClassOption { capacity: number; _count: { enrollments: number } }
 
 export default function StudentsPage() {
   const router = useRouter();
@@ -38,6 +40,7 @@ export default function StudentsPage() {
   const [years, setYears] = useState<YearOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAssign, setShowAssign] = useState(false);
+  const [sectionFor, setSectionFor] = useState<StudentRow | null>(null);
   const grades = useGrades();
 
   const canManage = ["SUPER_ADMIN", "ADMIN", "REGISTRAR"].includes(getSession()?.user.role ?? "");
@@ -180,10 +183,36 @@ export default function StudentsPage() {
             { header: "Gender", cell: (s) => <span className="capitalize">{s.gender.toLowerCase()}</span> },
             { header: "Registered", cell: (s) => formatDate(s.admittedAt) },
             { header: "Status", cell: (s) => <Badge>{s.status}</Badge> },
+            // Reshuffling sections is routine registrar work — offer it on
+            // the row rather than making them open each profile in turn.
+            ...(canManage
+              ? [{
+                  header: "",
+                  cell: (s: StudentRow) => (
+                    <button
+                      className="text-xs font-medium text-brand-600 hover:underline"
+                      onClick={(e) => { e.stopPropagation(); setSectionFor(s); }}
+                    >
+                      Change section
+                    </button>
+                  ),
+                }]
+              : []),
           ]}
         />
         {data && <Pager page={data.page} totalPages={data.totalPages} onPage={setPage} />}
       </Card>
+
+      {sectionFor && (
+        <ChangeSectionModal
+          student={sectionFor}
+          onClose={() => setSectionFor(null)}
+          onMoved={async () => {
+            setSectionFor(null);
+            await load();
+          }}
+        />
+      )}
 
       {showAssign && (
         <AssignToYearModal
@@ -195,6 +224,85 @@ export default function StudentsPage() {
         />
       )}
     </div>
+  );
+}
+
+// ==================== move a student between sections ====================
+
+/**
+ * "Change section": Grade 5 — A → Grade 5 — B for one student, in the
+ * current academic year. Only sections of the student's own grade are
+ * offered, because the API refuses any other — and a full one is shown as
+ * full rather than failing on save.
+ */
+function ChangeSectionModal({ student, onClose, onMoved }: {
+  student: StudentRow;
+  onClose: () => void;
+  onMoved: () => Promise<void>;
+}) {
+  const [classes, setClasses] = useState<SectionOption[] | null>(null);
+  const [classRoomId, setClassRoomId] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const current = student.enrollments[0]?.classRoom.name ?? null;
+
+  useEffect(() => {
+    get<SectionOption[]>("/academics/classes")
+      .then((all) => setClasses(all.filter((c) => c.gradeLevel === student.gradeLevel)))
+      .catch(() => setClasses([]));
+  }, [student.gradeLevel]);
+
+  async function save() {
+    setSaving(true);
+    setError(null);
+    try {
+      await patch(`/students/${student.id}`, { classRoomId });
+      await onMoved();
+    } catch (err) {
+      setError(err instanceof ApiClientError ? err.message : "Failed to move the student");
+      setSaving(false);
+    }
+  }
+
+  const full = (c: SectionOption) => c._count.enrollments >= c.capacity && c.name !== current;
+
+  return (
+    <Modal open title={`Change section — ${fullName(student)}`} onClose={onClose}>
+      <div className="space-y-4">
+        <div className="rounded-lg bg-slate-50 p-3 text-sm">
+          <p className="font-medium text-slate-800">{gradeLabel(student.gradeLevel)}</p>
+          <p className="text-slate-500">Currently in {current ?? "no section"}</p>
+        </div>
+
+        {!classes ? (
+          <div className="flex justify-center py-8 text-brand-600"><Spinner /></div>
+        ) : classes.length === 0 ? (
+          <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            There are no {gradeLabel(student.gradeLevel)} sections in the current academic year. Create one under Classes first.
+          </p>
+        ) : (
+          <Field label="Move to" hint="Sections of this student's grade, with seats used">
+            <Select value={classRoomId} onChange={(e) => setClassRoomId(e.target.value)}>
+              <option value="">— Select a section —</option>
+              {classes.map((c) => (
+                <option key={c.id} value={c.id} disabled={full(c)}>
+                  {c.name} ({c._count.enrollments}/{c.capacity}){full(c) ? " — full" : ""}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        )}
+
+        <ErrorNote message={error} />
+        <div className="flex justify-end gap-3">
+          <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button type="button" loading={saving} disabled={!classRoomId} onClick={() => void save()}>
+            Move student
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

@@ -1,6 +1,9 @@
 import { Router } from "express";
 import { z } from "zod";
-import { createStaffSchema, updateStaffSchema, paginationSchema, STAFF_TYPES, STAFF_STATUSES } from "@vertik12/shared";
+import {
+  createStaffSchema, updateStaffSchema, paginationSchema, staffDocumentSchema,
+  updateStaffDocumentSchema, STAFF_TYPES, STAFF_STATUSES,
+} from "@vertik12/shared";
 import { authenticate, requireRoles } from "../../middleware/auth";
 import { validateBody, validateQuery, parsedQuery } from "../../middleware/validate";
 import { asyncHandler } from "../../middleware/error-handler";
@@ -54,12 +57,14 @@ staffRouter.get(
   }),
 );
 
+// Registration accepts the day-one paperwork alongside the profile, so ID
+// and right-to-work checks are filed with the record rather than chased later.
 staffRouter.post(
   "/",
   requireRoles("ADMIN"),
   validateBody(createStaffSchema),
   asyncHandler(async (req, res) => {
-    res.status(201).json(ok(await staff.createStaff(req.body), "Staff member created"));
+    res.status(201).json(ok(await staff.createStaff(req.body, req.user!.sub), "Staff member created"));
   }),
 );
 
@@ -103,5 +108,72 @@ staffRouter.delete(
   validateBody(z.object({ status: z.enum(["TERMINATED", "RESIGNED"]).default("RESIGNED") })),
   asyncHandler(async (req, res) => {
     res.json(ok(await staff.deactivateStaff(req.params.id, req.body.status), "Staff deactivated"));
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// HR documents (identification, background check, work authorization…)
+//
+// ADMIN-only throughout — deliberately stricter than student documents.
+// A background-check result or a passport scan is not the accountant's or a
+// teacher's business, so these routes do not extend read access the way
+// /students/:id/documents does.
+// ---------------------------------------------------------------------------
+
+// Compliance chase-list across all staff: what has lapsed or is about to.
+// Two segments, so the single-segment "/:id" route above can never swallow it.
+staffRouter.get(
+  "/documents/expiring",
+  requireRoles("ADMIN"),
+  validateQuery(z.object({ withinDays: z.coerce.number().int().min(1).max(365).optional() })),
+  asyncHandler(async (req, res) => {
+    const { withinDays } = parsedQuery<{ withinDays?: number }>(req);
+    res.json(ok(await staff.expiringStaffDocuments(withinDays)));
+  }),
+);
+
+staffRouter.get(
+  "/:id/documents",
+  requireRoles("ADMIN"),
+  asyncHandler(async (req, res) => {
+    res.json(ok(await staff.listStaffDocuments(req.params.id)));
+  }),
+);
+
+staffRouter.post(
+  "/:id/documents",
+  requireRoles("ADMIN"),
+  validateBody(staffDocumentSchema),
+  asyncHandler(async (req, res) => {
+    res.status(201).json(ok(await staff.addStaffDocument(req.params.id, req.body, req.user!.sub), "Document filed"));
+  }),
+);
+
+staffRouter.get(
+  "/:id/documents/:docId",
+  requireRoles("ADMIN"),
+  asyncHandler(async (req, res) => {
+    const doc = await staff.getStaffDocument(req.params.id, req.params.docId);
+    res.setHeader("Content-Type", doc.type);
+    res.setHeader("Content-Disposition", `attachment; filename="${doc.name.replace(/[^\w.\- ]+/g, "_")}"`);
+    res.send(doc.buffer);
+  }),
+);
+
+staffRouter.patch(
+  "/:id/documents/:docId",
+  requireRoles("ADMIN"),
+  validateBody(updateStaffDocumentSchema),
+  asyncHandler(async (req, res) => {
+    res.json(ok(await staff.updateStaffDocument(req.params.id, req.params.docId, req.body), "Document updated"));
+  }),
+);
+
+staffRouter.delete(
+  "/:id/documents/:docId",
+  requireRoles("ADMIN"),
+  asyncHandler(async (req, res) => {
+    const removed = await staff.removeStaffDocument(req.params.id, req.params.docId);
+    res.json(ok(removed, `"${removed.label}" removed from the file`));
   }),
 );

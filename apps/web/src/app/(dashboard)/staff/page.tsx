@@ -1,12 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useState, type ChangeEvent, type FormEvent } from "react";
 import Link from "next/link";
-import type { Paginated } from "@vertik12/shared";
-import { STAFF_TYPES, STAFF_STATUSES } from "@vertik12/shared";
+import type { AttachmentInput, Paginated, StaffDocumentCategory } from "@vertik12/shared";
+import {
+  STAFF_TYPES, STAFF_STATUSES, STAFF_DOCUMENT_CATEGORIES, STAFF_DOCUMENT_CATEGORY_LABELS,
+  EXPIRING_STAFF_DOCUMENT_CATEGORIES, STAFF_DOCUMENT_EXPIRY_WARNING_DAYS, ATTACHMENT_ACCEPT,
+} from "@vertik12/shared";
 import { get, post, put, del, getSession, ApiClientError } from "@/lib/api";
-import { formatMoney, gradeLabel, humanize } from "@/lib/format";
+import { fileToAttachment, downloadAttachment } from "@/lib/files";
+import { formatDate, formatMoney, gradeLabel, humanize } from "@/lib/format";
 import { Badge, Button, Card, ErrorNote, Field, Input, Modal, PageHeader, Select, Spinner } from "@/components/ui";
+import { Icon } from "@/components/icons";
 import { DataTable, Pager } from "@/components/data-table";
 
 interface StaffRow {
@@ -103,6 +108,10 @@ export default function StaffPage() {
   const [assigning, setAssigning] = useState<StaffRow | null>(null);
   const [salaryFor, setSalaryFor] = useState<StaffRow | null>(null);
   const [statusFor, setStatusFor] = useState<StaffRow | null>(null);
+  const [documentsFor, setDocumentsFor] = useState<StaffRow | null>(null);
+  // HR paperwork staged in the registration form — nothing is uploaded until
+  // the staff member is actually created.
+  const [documents, setDocuments] = useState<PendingDocument[]>([]);
   const isAdmin = ["SUPER_ADMIN", "ADMIN"].includes(getSession()?.user.role ?? "");
 
   async function toggleAccess(s: StaffRow) {
@@ -152,10 +161,19 @@ export default function StaffPage() {
         ...form,
         department: form.department || undefined,
         phone: form.phone || undefined,
+        // Day-one paperwork travels with the registration.
+        documents: documents.map((d) => ({
+          label: d.label,
+          category: d.category,
+          ...(d.expiresAt ? { expiresAt: d.expiresAt } : {}),
+          ...(d.note ? { note: d.note } : {}),
+          attachment: d.attachment,
+        })),
       });
       setTempPassword(result.temporaryPassword ?? null);
       setShowAdd(false);
       setForm(emptyForm);
+      setDocuments([]);
       await load();
     } catch (err) {
       setError(err instanceof ApiClientError ? err.message : "Failed to create staff member");
@@ -245,6 +263,15 @@ export default function StaffPage() {
                     >
                       Status
                     </button>
+                    {/* HR file: ID, background check, work authorization…
+                        Available in every employment state — leavers' records
+                        must stay reachable for audits. */}
+                    <button
+                      className="text-xs font-medium text-brand-600 hover:underline"
+                      onClick={(e) => { e.stopPropagation(); setDocumentsFor(s); }}
+                    >
+                      Documents
+                    </button>
                     {s.status === "ACTIVE" && (
                       <>
                         {s.staffType === "TEACHING" && (
@@ -301,6 +328,8 @@ export default function StaffPage() {
         />
       )}
 
+      {documentsFor && <DocumentsModal staff={documentsFor} onClose={() => setDocumentsFor(null)} />}
+
       <AddStaffModal
         open={showAdd}
         onClose={() => setShowAdd(false)}
@@ -309,6 +338,8 @@ export default function StaffPage() {
         onSubmit={onSubmit}
         error={error}
         saving={saving}
+        documents={documents}
+        setDocuments={setDocuments}
       />
     </div>
   );
@@ -587,7 +618,7 @@ function AssignSubjectsModal({ teacher, onClose }: { teacher: StaffRow; onClose:
   );
 }
 
-function AddStaffModal({ open, onClose, form, set, onSubmit, error, saving }: {
+function AddStaffModal({ open, onClose, form, set, onSubmit, error, saving, documents, setDocuments }: {
   open: boolean;
   onClose: () => void;
   form: typeof emptyForm;
@@ -595,6 +626,8 @@ function AddStaffModal({ open, onClose, form, set, onSubmit, error, saving }: {
   onSubmit: (e: FormEvent) => void;
   error: string | null;
   saving: boolean;
+  documents: PendingDocument[];
+  setDocuments: (next: PendingDocument[]) => void;
 }) {
   return (
       <Modal open={open} title="Add staff member" onClose={onClose} wide>
@@ -621,6 +654,20 @@ function AddStaffModal({ open, onClose, form, set, onSubmit, error, saving }: {
             <Field label="Phone"><Input value={form.phone} onChange={set("phone")} /></Field>
             <Field label="Join date"><Input type="date" value={form.joinDate} onChange={set("joinDate")} required /></Field>
           </div>
+
+          {/* Day-one paperwork: attached here so ID and right-to-work checks
+              are filed with the record instead of chased down afterwards.
+              Anything missing today can still be added from the file later. */}
+          <div className="rounded-xl border border-slate-200 p-4">
+            <p className="text-sm font-semibold text-slate-700">Documents</p>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Identification, background check, work authorization… Optional — you can add these later from the staff member&apos;s file.
+            </p>
+            <div className="mt-3">
+              <PendingDocumentList documents={documents} onChange={setDocuments} />
+            </div>
+          </div>
+
           <ErrorNote message={error} />
           <p className="text-xs text-slate-500">A login account is created automatically with a generated temporary password.</p>
           <div className="flex justify-end gap-3">
@@ -629,5 +676,271 @@ function AddStaffModal({ open, onClose, form, set, onSubmit, error, saving }: {
           </div>
         </form>
       </Modal>
+  );
+}
+
+// ============================ HR documents ============================
+// Identification, background checks, work authorization, contracts. These
+// are the most sensitive records in the system, so the API restricts every
+// route to ADMIN — an accountant or teacher can never read them.
+
+interface PendingDocument {
+  label: string;
+  category: StaffDocumentCategory;
+  expiresAt: string;
+  note: string;
+  attachment: AttachmentInput;
+}
+
+interface StaffDocumentRow {
+  id: string;
+  label: string;
+  category: string;
+  fileName: string;
+  fileType: string;
+  expiresAt: string | null;
+  note: string | null;
+  createdAt: string;
+}
+
+const categoryLabel = (c: string) =>
+  STAFF_DOCUMENT_CATEGORY_LABELS[c as StaffDocumentCategory] ?? humanize(c);
+
+/** Does this category normally carry a renewal date? Drives the expiry nudge. */
+const expires = (c: string) => (EXPIRING_STAFF_DOCUMENT_CATEGORIES as string[]).includes(c);
+
+/** Expired / expiring-soon styling, shared by both document views. */
+function expiryTone(expiresAt: string | null): { tone: "red" | "yellow" | "gray"; text: string } | null {
+  if (!expiresAt) return null;
+  const days = Math.ceil((new Date(expiresAt).getTime() - Date.now()) / 86_400_000);
+  if (days < 0) return { tone: "red", text: `Expired ${formatDate(expiresAt)}` };
+  if (days <= STAFF_DOCUMENT_EXPIRY_WARNING_DAYS) return { tone: "yellow", text: `Expires in ${days} day${days === 1 ? "" : "s"}` };
+  return { tone: "gray", text: `Valid to ${formatDate(expiresAt)}` };
+}
+
+/**
+ * The "attach a document" form. Used twice: staging files during
+ * registration (nothing is uploaded until the staff member exists) and
+ * filing them one at a time afterwards.
+ */
+function DocumentForm({ onAdd, busy, submitLabel }: {
+  onAdd: (doc: PendingDocument) => void | Promise<void>;
+  busy?: boolean;
+  submitLabel: string;
+}) {
+  const [label, setLabel] = useState("");
+  const [category, setCategory] = useState<StaffDocumentCategory>("IDENTIFICATION");
+  const [expiresAt, setExpiresAt] = useState("");
+  const [note, setNote] = useState("");
+  const [file, setFile] = useState<AttachmentInput | null>(null);
+  const [fileName, setFileName] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  async function pick(e: ChangeEvent<HTMLInputElement>) {
+    const picked = e.target.files?.[0];
+    e.target.value = ""; // let the same file be re-picked after an error
+    if (!picked) return;
+    setError(null);
+    try {
+      setFile(await fileToAttachment(picked));
+      setFileName(picked.name);
+      // Most people name the document after the file; pre-fill but stay editable.
+      if (!label) setLabel(picked.name.replace(/\.[^.]+$/, ""));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not read the file");
+    }
+  }
+
+  async function submit() {
+    if (!file) {
+      setError("Choose a file first");
+      return;
+    }
+    setError(null);
+    await onAdd({ label: label.trim() || fileName, category, expiresAt, note, attachment: file });
+    setLabel("");
+    setExpiresAt("");
+    setNote("");
+    setFile(null);
+    setFileName("");
+  }
+
+  return (
+    <div className="space-y-3 rounded-lg bg-slate-50 p-3">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field label="Type">
+          <Select value={category} onChange={(e) => setCategory(e.target.value as StaffDocumentCategory)}>
+            {STAFF_DOCUMENT_CATEGORIES.map((c) => <option key={c} value={c}>{categoryLabel(c)}</option>)}
+          </Select>
+        </Field>
+        <Field label="Label" hint="What this document is">
+          <Input value={label} onChange={(e) => setLabel(e.target.value)} maxLength={100} placeholder="e.g. Passport" />
+        </Field>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field
+          label="Expires"
+          hint={expires(category) ? "This type usually has a renewal date" : "Optional"}
+        >
+          <Input type="date" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} />
+        </Field>
+        <Field label="Note" hint="Optional">
+          <Input value={note} onChange={(e) => setNote(e.target.value)} maxLength={500} />
+        </Field>
+      </div>
+      <div className="flex flex-wrap items-center gap-3">
+        <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50">
+          <Icon name="paperclip" className="h-4 w-4" />
+          {fileName || "Choose file"}
+          <input type="file" accept={ATTACHMENT_ACCEPT} className="hidden" onChange={(e) => void pick(e)} />
+        </label>
+        <Button type="button" onClick={() => void submit()} loading={busy} disabled={!file}>{submitLabel}</Button>
+        <span className="text-xs text-slate-400">PDF, JPG, PNG or Word · max 5 MB</span>
+      </div>
+      <ErrorNote message={error} />
+    </div>
+  );
+}
+
+/** Documents staged during registration — held in memory until the staff member exists. */
+function PendingDocumentList({ documents, onChange }: {
+  documents: PendingDocument[];
+  onChange: (next: PendingDocument[]) => void;
+}) {
+  return (
+    <div className="space-y-3">
+      {documents.length > 0 && (
+        <ul className="space-y-2">
+          {documents.map((d, i) => (
+            <li key={`${d.label}-${i}`} className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 px-3 py-2">
+              <span className="min-w-0">
+                <span className="block truncate text-sm font-medium text-slate-800">{d.label}</span>
+                <span className="block text-xs text-slate-500">
+                  {categoryLabel(d.category)} · {d.attachment.name}
+                  {d.expiresAt && ` · expires ${formatDate(d.expiresAt)}`}
+                </span>
+              </span>
+              <button
+                type="button"
+                className="shrink-0 text-xs font-medium text-rose-600 hover:underline"
+                onClick={() => onChange(documents.filter((_, idx) => idx !== i))}
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <DocumentForm submitLabel="Attach" onAdd={(doc) => onChange([...documents, doc])} />
+    </div>
+  );
+}
+
+/** Manage an existing staff member's file: view, download, add, remove. */
+function DocumentsModal({ staff, onClose }: { staff: StaffRow; onClose: () => void }) {
+  const [documents, setDocuments] = useState<StaffDocumentRow[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(
+    () => get<StaffDocumentRow[]>(`/staff/${staff.id}/documents`).then(setDocuments),
+    [staff.id],
+  );
+  useEffect(() => {
+    void load().catch((e) => setError(e instanceof Error ? e.message : "Failed to load documents"));
+  }, [load]);
+
+  async function add(doc: PendingDocument) {
+    setBusy(true);
+    setError(null);
+    try {
+      await post(`/staff/${staff.id}/documents`, {
+        label: doc.label,
+        category: doc.category,
+        ...(doc.expiresAt ? { expiresAt: doc.expiresAt } : {}),
+        ...(doc.note ? { note: doc.note } : {}),
+        attachment: doc.attachment,
+      });
+      setNotice(`"${doc.label}" filed.`);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiClientError ? err.message : "Failed to file the document");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(doc: StaffDocumentRow) {
+    if (!window.confirm(`Remove "${doc.label}" from this file?`)) return;
+    try {
+      await del(`/staff/${staff.id}/documents/${doc.id}`);
+      setNotice(`"${doc.label}" removed.`);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiClientError ? err.message : "Failed to remove the document");
+    }
+  }
+
+  return (
+    <Modal open title={`Documents — ${staff.user.firstName} ${staff.user.lastName}`} onClose={onClose} wide>
+      <div className="space-y-4">
+        <p className="text-xs text-slate-500">
+          Identification, background checks, work authorization and contracts. Visible to administrators only.
+        </p>
+
+        {!documents ? (
+          <div className="flex justify-center py-10 text-brand-600"><Spinner /></div>
+        ) : documents.length === 0 ? (
+          <p className="rounded-lg bg-slate-50 py-6 text-center text-sm text-slate-400">No documents on file yet.</p>
+        ) : (
+          <ul className="space-y-2">
+            {documents.map((d) => {
+              const expiry = expiryTone(d.expiresAt);
+              return (
+                <li key={d.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 px-3 py-2">
+                  <span className="min-w-0">
+                    <span className="flex flex-wrap items-center gap-2">
+                      <span className="truncate text-sm font-medium text-slate-800">{d.label}</span>
+                      <Badge tone="blue">{categoryLabel(d.category)}</Badge>
+                      {expiry && <Badge tone={expiry.tone}>{expiry.text}</Badge>}
+                    </span>
+                    <span className="block text-xs text-slate-500">
+                      {d.fileName} · filed {formatDate(d.createdAt)}
+                      {d.note && ` · ${d.note}`}
+                    </span>
+                  </span>
+                  <span className="flex shrink-0 gap-3">
+                    <button
+                      className="text-xs font-medium text-brand-600 hover:underline"
+                      onClick={() =>
+                        downloadAttachment(`/staff/${staff.id}/documents/${d.id}`, d.fileName)
+                          .catch((e) => setError(e instanceof Error ? e.message : "Download failed"))
+                      }
+                    >
+                      Download
+                    </button>
+                    <button className="text-xs font-medium text-rose-600 hover:underline" onClick={() => void remove(d)}>
+                      Remove
+                    </button>
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+
+        <div>
+          <p className="mb-2 text-sm font-semibold text-slate-700">Add a document</p>
+          <DocumentForm submitLabel="Upload" busy={busy} onAdd={add} />
+        </div>
+
+        {notice && <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm text-emerald-800">{notice}</div>}
+        <ErrorNote message={error} />
+        <div className="flex justify-end">
+          <Button type="button" variant="secondary" onClick={onClose}>Close</Button>
+        </div>
+      </div>
+    </Modal>
   );
 }

@@ -9,6 +9,21 @@ import { ok } from "../../lib/pagination";
 export const dashboardRouter = Router();
 dashboardRouter.use(authenticate);
 
+/**
+ * The school's letterhead — name, motto, contact details — for anything a
+ * user prints (timetables, registers). Readable by every signed-in role:
+ * the same fields already appear on receipts and report cards that parents
+ * hold in their hands, and none of them are configuration secrets. Editing
+ * still lives behind Administration › School settings (SUPER_ADMIN).
+ */
+dashboardRouter.get("/school", asyncHandler(async (_req, res) => {
+  const settings = await prisma.schoolSettings.findUnique({
+    where: { id: "school" },
+    select: { schoolName: true, motto: true, logoUrl: true, address: true, phone: true, email: true },
+  });
+  res.json(ok(settings ?? { schoolName: "Vertik12", motto: null, logoUrl: null, address: null, phone: null, email: null }));
+}));
+
 /** Aggregated stats for the admin home screen — one round trip for the whole page. */
 dashboardRouter.get("/stats", requireRoles("ADMIN", "REGISTRAR", "TEACHER", "ACCOUNTANT"),
   asyncHandler(async (req, res) => {

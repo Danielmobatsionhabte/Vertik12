@@ -21,6 +21,13 @@ export type Role = (typeof ROLES)[number];
 export const STAFF_ROLES: Role[] = ["SUPER_ADMIN", "ADMIN", "REGISTRAR", "TEACHER", "ACCOUNTANT"];
 
 /**
+ * Family portal roles. They READ the school calendar like everyone else but
+ * never write to it — a parent or student cannot propose an event, so the
+ * administration's review queue only ever holds staff suggestions.
+ */
+export const FAMILY_ROLES: Role[] = ["PARENT", "STUDENT"];
+
+/**
  * Module-level access per role — the single source of truth for both the
  * web sidebar and a human-readable summary of the API guards.
  *
@@ -144,6 +151,37 @@ export type StaffType = (typeof STAFF_TYPES)[number];
 
 export const STAFF_STATUSES = ["ACTIVE", "ON_LEAVE", "TERMINATED", "RESIGNED"] as const;
 export type StaffStatus = (typeof STAFF_STATUSES)[number];
+
+/**
+ * HR paperwork filed against an employee. The category drives grouping and
+ * the expiry chase-list — work permits, background checks and medical
+ * clearances are the ones that lapse.
+ */
+export const STAFF_DOCUMENT_CATEGORIES = [
+  "IDENTIFICATION", "BACKGROUND_CHECK", "WORK_AUTHORIZATION", "QUALIFICATION",
+  "CONTRACT", "MEDICAL", "REFERENCE", "OTHER",
+] as const;
+export type StaffDocumentCategory = (typeof STAFF_DOCUMENT_CATEGORIES)[number];
+
+/** Human labels — the enum names are terse for storage, not for people. */
+export const STAFF_DOCUMENT_CATEGORY_LABELS: Record<StaffDocumentCategory, string> = {
+  IDENTIFICATION: "Identification",
+  BACKGROUND_CHECK: "Background check",
+  WORK_AUTHORIZATION: "Work authorization",
+  QUALIFICATION: "Qualification / certificate",
+  CONTRACT: "Contract",
+  MEDICAL: "Medical clearance",
+  REFERENCE: "Reference",
+  OTHER: "Other",
+};
+
+/** Categories that routinely expire — the UI nudges for a date on these. */
+export const EXPIRING_STAFF_DOCUMENT_CATEGORIES: StaffDocumentCategory[] = [
+  "BACKGROUND_CHECK", "WORK_AUTHORIZATION", "MEDICAL", "IDENTIFICATION",
+];
+
+/** A document is "expiring soon" inside this window (days). */
+export const STAFF_DOCUMENT_EXPIRY_WARNING_DAYS = 60;
 
 export const ATTENDANCE_STATUSES = ["PRESENT", "ABSENT", "LATE", "EXCUSED"] as const;
 export type AttendanceStatus = (typeof ATTENDANCE_STATUSES)[number];

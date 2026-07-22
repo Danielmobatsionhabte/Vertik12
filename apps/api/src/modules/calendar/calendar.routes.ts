@@ -38,8 +38,16 @@ calendarRouter.get("/:id", asyncHandler(async (req, res) => {
   res.json(ok(await calendar.getEvent(req.params.id, req.user!)));
 }));
 
-// Any stakeholder may add to the calendar — admins publish, others propose.
-calendarRouter.post("/", validateBody(calendarEventSchema), asyncHandler(async (req, res) => {
+/**
+ * Families read the calendar but never write to it. Parents and students
+ * cannot propose, edit or withdraw events — the school decides what goes on
+ * its own calendar, and the administration's review queue stays limited to
+ * suggestions from staff.
+ */
+const staffOnly = requireRoles("ADMIN", "REGISTRAR", "TEACHER", "ACCOUNTANT");
+
+// Staff may add to the calendar — admins publish, other staff propose.
+calendarRouter.post("/", staffOnly, validateBody(calendarEventSchema), asyncHandler(async (req, res) => {
   const { event, published } = await calendar.createEvent(req.body, req.user!);
   res.status(201).json(ok(
     event,
@@ -47,7 +55,7 @@ calendarRouter.post("/", validateBody(calendarEventSchema), asyncHandler(async (
   ));
 }));
 
-calendarRouter.patch("/:id", validateBody(updateCalendarEventSchema), asyncHandler(async (req, res) => {
+calendarRouter.patch("/:id", staffOnly, validateBody(updateCalendarEventSchema), asyncHandler(async (req, res) => {
   res.json(ok(await calendar.updateEvent(req.params.id, req.body, req.user!), "Event updated"));
 }));
 
@@ -57,6 +65,6 @@ calendarRouter.post("/:id/review", requireRoles("ADMIN"), validateBody(reviewCal
     res.json(ok(event, req.body.action === "APPROVE" ? "Event published to the calendar" : "Proposal rejected"));
   }));
 
-calendarRouter.delete("/:id", asyncHandler(async (req, res) => {
+calendarRouter.delete("/:id", staffOnly, asyncHandler(async (req, res) => {
   res.json(ok(await calendar.deleteEvent(req.params.id, req.user!), "Event removed"));
 }));

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import {
-  CALENDAR_CATEGORIES, CALENDAR_CATEGORY_TONES, CALENDAR_AUDIENCES,
+  CALENDAR_CATEGORIES, CALENDAR_CATEGORY_TONES, CALENDAR_AUDIENCES, FAMILY_ROLES,
   type CalendarCategory,
 } from "@vertik12/shared";
 import { get, post, patch, del, getSession, ApiClientError } from "@/lib/api";
@@ -102,9 +102,12 @@ const emptyForm = {
 export default function CalendarPage() {
   const session = getSession();
   const role = session?.user.role;
-  // The administration publishes directly and reviews everyone else's
-  // proposals; every other role proposes. The API enforces the same split.
+  // The administration publishes directly and reviews staff proposals.
   const isAdmin = role === "SUPER_ADMIN" || role === "ADMIN";
+  // Families read the calendar but never write to it: parents and students
+  // cannot propose, edit or withdraw events. The API enforces the same rule,
+  // so hiding the controls is UX, not the security boundary.
+  const canPropose = !!role && !(FAMILY_ROLES as string[]).includes(role);
 
   const today = useMemo(() => new Date(), []);
   const [cursor, setCursor] = useState(() => ({ year: today.getUTCFullYear(), month: today.getUTCMonth() }));
@@ -243,7 +246,7 @@ export default function CalendarPage() {
   }
 
   const canEdit = (event: CalendarEventRow) =>
-    isAdmin || (event.createdById === session?.user.id && event.status === "PENDING");
+    canPropose && (isAdmin || (event.createdById === session?.user.id && event.status === "PENDING"));
 
   const dayEvents = selectedDay
     ? (events ?? []).filter((e) => e.startDate.slice(0, 10) <= selectedDay && selectedDay <= e.endDate.slice(0, 10))
@@ -260,7 +263,9 @@ export default function CalendarPage() {
         subtitle={
           isAdmin
             ? "Term dates, holidays, exams and meetings — visible to every portal"
-            : "Everything happening at school. Anything you add is reviewed by the administration."
+            : canPropose
+            ? "Everything happening at school. Anything you add is reviewed by the administration."
+            : "Term dates, holidays, exams and school events"
         }
         actions={
           <div className="flex items-center gap-2">
@@ -270,7 +275,9 @@ export default function CalendarPage() {
                 {pending.length} proposal{pending.length === 1 ? "" : "s"}
               </Button>
             )}
-            <Button onClick={() => openCreate()}>+ {isAdmin ? "Add event" : "Propose event"}</Button>
+            {canPropose && (
+              <Button onClick={() => openCreate()}>+ {isAdmin ? "Add event" : "Propose event"}</Button>
+            )}
           </div>
         }
       />
@@ -412,7 +419,7 @@ export default function CalendarPage() {
                   </p>
                 )}
               </div>
-              {selectedDay && (
+              {selectedDay && canPropose && (
                 <Button variant="secondary" className="mt-3 w-full" onClick={() => openCreate(selectedDay)}>
                   + {isAdmin ? "Add" : "Propose"} on this day
                 </Button>

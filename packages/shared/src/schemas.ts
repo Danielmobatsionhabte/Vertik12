@@ -4,7 +4,7 @@ import {
   ATTENDANCE_STATUSES, PAYMENT_METHODS, FEE_FREQUENCIES, ANNOUNCEMENT_AUDIENCES,
   DAYS_OF_WEEK, PAYMENT_PERIODS, EXAM_CATEGORIES, LESSON_PLAN_STATUSES,
   CALENDAR_CATEGORIES, CALENDAR_AUDIENCES, CALENDAR_EVENT_STATUSES,
-  SCHEDULE_REQUEST_KINDS, minutesOfDay,
+  SCHEDULE_REQUEST_KINDS, STAFF_DOCUMENT_CATEGORIES, minutesOfDay,
 } from "./constants";
 
 /**
@@ -52,6 +52,34 @@ export const strongPassword = z
   .max(128, "Password is too long")
   .regex(/[A-Za-z]/, "Password must contain a letter")
   .regex(/[0-9]/, "Password must contain a number");
+
+/**
+ * Document attachments — assignment briefs, parent submissions, student
+ * paperwork and HR files all share this shape. Only PDF, JPEG, PNG and Word
+ * documents are accepted; the base64 body is capped at ~5 MB. The API
+ * decodes it and stores the body in the document store.
+ */
+export const ATTACHMENT_MIME_TYPES = [
+  "application/pdf",
+  "image/jpeg",
+  "image/png",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+] as const;
+export const ATTACHMENT_MAX_BYTES = 5 * 1024 * 1024;
+export const ATTACHMENT_ACCEPT = ".pdf,.jpg,.jpeg,.png,.doc,.docx";
+
+export const attachmentSchema = z.object({
+  name: safeText(200).refine((n) => !/[\\/]/.test(n), "Invalid file name"),
+  type: z.enum(ATTACHMENT_MIME_TYPES),
+  // base64 inflates ~4/3, so cap the encoded length accordingly.
+  dataBase64: z
+    .string()
+    .min(1)
+    .max(Math.ceil((ATTACHMENT_MAX_BYTES * 4) / 3) + 4, "File is too large (max 5 MB)")
+    .regex(/^[A-Za-z0-9+/=]+$/, "Invalid file data"),
+});
+export type AttachmentInput = z.infer<typeof attachmentSchema>;
 
 // ---------- auth ----------
 export const loginSchema = z.object({
@@ -118,6 +146,29 @@ export const updateStudentSchema = createStudentSchema
   .extend({ status: z.enum(STUDENT_STATUSES).optional() });
 
 // ---------- staff ----------
+
+/**
+ * Paperwork on an employee's file — identification, background check, work
+ * authorization, contract… Filed at registration or later from the staff
+ * member's management screen.
+ */
+export const staffDocumentSchema = z.object({
+  label: safeText(100), // e.g. "Passport", "DBS certificate", "Work permit"
+  category: z.enum(STAFF_DOCUMENT_CATEGORIES).default("OTHER"),
+  /** Renewal date for the documents that lapse (permits, checks, medicals). */
+  expiresAt: isoDate.optional(),
+  note: safeText(500, 0).optional(),
+  attachment: attachmentSchema, // PDF/JPG/PNG/Word, max 5 MB
+});
+export type StaffDocumentInput = z.infer<typeof staffDocumentSchema>;
+
+/** Metadata-only edit (re-file under another category, set an expiry). */
+export const updateStaffDocumentSchema = staffDocumentSchema
+  .omit({ attachment: true })
+  .partial()
+  .extend({ clearExpiry: z.boolean().optional() });
+export type UpdateStaffDocumentInput = z.infer<typeof updateStaffDocumentSchema>;
+
 export const createStaffSchema = z.object({
   firstName: safeText(100),
   lastName: safeText(100),
@@ -130,6 +181,12 @@ export const createStaffSchema = z.object({
   phone: phone.optional().or(z.literal("")),
   joinDate: isoDate,
   qualifications: safeText(500, 0).optional(),
+  /**
+   * HR paperwork collected during registration (ID, background check, work
+   * authorization…). Optional — anything missing on the day can be added
+   * later from the staff member's management screen.
+   */
+  documents: z.array(staffDocumentSchema).max(10).default([]),
 });
 export type CreateStaffInput = z.infer<typeof createStaffSchema>;
 
@@ -404,33 +461,6 @@ export const reviewSubmissionSchema = z.object({
 });
 
 // ---------- assignments (teacher → students/parents) ----------
-
-/**
- * Document attachments (teacher's assignment brief, parent's submission).
- * Only PDF, JPEG, PNG and Word documents are accepted; the base64 body is
- * capped at ~5 MB. The API decodes and stores it in the document store.
- */
-export const ATTACHMENT_MIME_TYPES = [
-  "application/pdf",
-  "image/jpeg",
-  "image/png",
-  "application/msword",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-] as const;
-export const ATTACHMENT_MAX_BYTES = 5 * 1024 * 1024;
-export const ATTACHMENT_ACCEPT = ".pdf,.jpg,.jpeg,.png,.doc,.docx";
-
-export const attachmentSchema = z.object({
-  name: safeText(200).refine((n) => !/[\\/]/.test(n), "Invalid file name"),
-  type: z.enum(ATTACHMENT_MIME_TYPES),
-  // base64 inflates ~4/3, so cap the encoded length accordingly.
-  dataBase64: z
-    .string()
-    .min(1)
-    .max(Math.ceil((ATTACHMENT_MAX_BYTES * 4) / 3) + 4, "File is too large (max 5 MB)")
-    .regex(/^[A-Za-z0-9+/=]+$/, "Invalid file data"),
-});
-export type AttachmentInput = z.infer<typeof attachmentSchema>;
 
 export const createAssignmentSchema = z.object({
   classSubjectId: id,

@@ -159,6 +159,32 @@ class DynamoDocumentStore implements DocumentStore {
     }
     return item;
   }
+
+  /**
+   * Restore under a known key. Same spill-to-S3 rule as `put` — a restored
+   * document is the same size it was when written, so a large one must land
+   * in the bucket rather than blow the 400 KB item limit.
+   */
+  async restore(collection: string, key: string, doc: Record<string, unknown>) {
+    const { PutCommand } = await import("@aws-sdk/lib-dynamodb" as string);
+    const client = await this.client();
+    const json = JSON.stringify(doc);
+    if (Buffer.byteLength(json, "utf8") > DynamoDocumentStore.SPILL_BYTES) {
+      if (!this.bucket) {
+        throw new Error("Document exceeds the DynamoDB item size limit and DOCUMENTS_BUCKET is not configured");
+      }
+      const s3Key = `${collection}/${key}.json`;
+      const { PutObjectCommand } = await import("@aws-sdk/client-s3" as string);
+      await (await this.s3()).send(
+        new PutObjectCommand({ Bucket: this.bucket, Key: s3Key, Body: json, ContentType: "application/json" }),
+      );
+      await client.send(new PutCommand({ TableName: this.table, Item: { pk: `${collection}#${key}`, s3Key } }));
+      return;
+    }
+    // PutCommand overwrites the whole item, so a document that previously
+    // spilled to S3 correctly loses its stale s3Key pointer here.
+    await client.send(new PutCommand({ TableName: this.table, Item: { pk: `${collection}#${key}`, ...doc } }));
+  }
 }
 
 const driver = process.env.DOCUMENT_STORE ?? "local";

@@ -46,7 +46,13 @@ export function createApp() {
   // encoding), so they get a larger body cap than the 1 MB default.
   const uploadJson = express.json({ limit: "8mb" });
   const standardJson = express.json({ limit: "1mb" });
-  const UPLOAD_PATHS = ["/api/v1/assignments", "/api/v1/portal/assignments", "/api/v1/students", "/api/v1/lesson-plans"];
+  const UPLOAD_PATHS = [
+    "/api/v1/assignments", "/api/v1/portal/assignments", "/api/v1/students",
+    "/api/v1/lesson-plans",
+    // Staff registration can carry several HR documents (ID, background
+    // check, work permit) in one request, plus the per-document uploads.
+    "/api/v1/staff",
+  ];
   app.use((req, res, next) => {
     if (req.originalUrl === "/api/v1/finance/payments/webhook") return next();
     const parser = UPLOAD_PATHS.some((p) => req.originalUrl.startsWith(p)) ? uploadJson : standardJson;

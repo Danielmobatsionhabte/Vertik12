@@ -127,12 +127,26 @@ async function tryRefresh(): Promise<Session | null> {
   return refreshing;
 }
 
+/** Server-set marker for "an administrator ended this session deliberately". */
+const errorCode = (err: ApiClientError): string | undefined =>
+  (err.details as unknown as { code?: string } | undefined)?.code;
+
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const session = getSession();
   try {
     return await rawRequest<T>(path, options, session?.accessToken);
   } catch (err) {
     if (err instanceof ApiClientError && err.status === 401 && session) {
+      // A session the administrator cut off (password reset, account
+      // disabled) is over for good — retrying the refresh would only fail,
+      // so sign out immediately rather than after a pointless round trip.
+      if (errorCode(err) === "SESSION_REVOKED") {
+        setSession(null);
+        if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
+          window.location.href = "/login?reason=password-reset";
+        }
+        throw err;
+      }
       const renewed = await tryRefresh();
       if (renewed) return rawRequest<T>(path, options, renewed.accessToken);
       // Refresh rejected — the account was disabled or the session revoked.

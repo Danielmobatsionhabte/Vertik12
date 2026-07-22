@@ -1,4 +1,4 @@
-import type { CreateStaffInput, PaginationQuery } from "@vertik12/shared";
+import { STAFF_DOCUMENT_EXPIRY_WARNING_DAYS, type CreateStaffInput, type PaginationQuery } from "@vertik12/shared";
 import type { Prisma } from "@prisma/client";
 import crypto from "node:crypto";
 import { prisma } from "../../lib/prisma";
@@ -6,6 +6,7 @@ import { ApiError } from "../../lib/errors";
 import { hashPassword } from "../../lib/auth-tokens";
 import { sendMail } from "../../lib/mailer";
 import { staffWelcomeEmail } from "../../lib/email-templates";
+import { documentStore } from "../../lib/document-store";
 import { paginate, toSkipTake } from "../../lib/pagination";
 
 async function nextStaffNo(): Promise<string> {
@@ -151,9 +152,9 @@ export async function getStaff(id: string) {
  * Returns a generated temporary password when none was supplied so the
  * admin can hand it to the new hire (they change it on first login).
  */
-export async function createStaff(input: CreateStaffInput) {
+export async function createStaff(input: CreateStaffInput, uploadedById?: string) {
   const tempPassword = input.password ?? `Vrt-${crypto.randomBytes(6).toString("base64url")}`;
-  const { password: _password, email, role, firstName, lastName, ...profile } = input;
+  const { password: _password, email, role, firstName, lastName, documents = [], ...profile } = input;
 
   const staff = await prisma.$transaction(async (tx) => {
     const user = await tx.user.create({
@@ -172,6 +173,13 @@ export async function createStaff(input: CreateStaffInput) {
       include: { user: { select: { email: true, firstName: true, lastName: true, role: true } } },
     });
   });
+
+  // Paperwork collected on the day (ID, background check, work permit…).
+  // Written after the account exists so a rejected file can never leave a
+  // half-created employee behind; each is filed independently.
+  for (const document of documents) {
+    await addStaffDocument(staff.id, document, uploadedById);
+  }
 
   // EMAIL PATH: staff registration → welcome email with sign-in details.
   // Fire-and-forget: a mail outage must never fail the registration itself.
@@ -255,4 +263,135 @@ export async function setWebAccess(id: string, isActive: boolean, actorRole: str
     await prisma.refreshToken.updateMany({ where: { userId: staff.userId, revokedAt: null }, data: { revokedAt: new Date() } });
   }
   return getStaff(id);
+}
+
+// ==================== staff (HR) documents ====================
+
+const DOCUMENTS = "staff-documents"; // document-store collection
+
+/**
+ * File paperwork against an employee — identification, background check,
+ * work authorization, contract, qualifications. The body goes to the
+ * document store; SQL keeps the reference plus the metadata HR searches on.
+ *
+ * These are the most sensitive records in the system, so every route that
+ * touches them is ADMIN-only (see staff.routes.ts) — unlike student
+ * documents, an accountant or teacher can never read them.
+ */
+export async function addStaffDocument(
+  staffId: string,
+  input: {
+    label: string;
+    category: string;
+    expiresAt?: Date;
+    note?: string;
+    attachment: { name: string; type: string; dataBase64: string };
+  },
+  uploadedById?: string,
+) {
+  const staff = await prisma.staff.findUnique({ where: { id: staffId } });
+  if (!staff) throw ApiError.notFound("Staff member");
+
+  const fileRef = await documentStore.put(DOCUMENTS, {
+    name: input.attachment.name,
+    type: input.attachment.type,
+    data: input.attachment.dataBase64,
+  });
+  return prisma.staffDocument.create({
+    data: {
+      staffId,
+      label: input.label,
+      category: input.category,
+      expiresAt: input.expiresAt ?? null,
+      note: input.note || null,
+      fileRef,
+      fileName: input.attachment.name,
+      fileType: input.attachment.type,
+      uploadedById: uploadedById ?? null,
+    },
+    select: documentSelect,
+  });
+}
+
+// The file body never belongs in a list response — only its metadata.
+const documentSelect = {
+  id: true, label: true, category: true, fileName: true, fileType: true,
+  expiresAt: true, note: true, createdAt: true,
+} as const;
+
+export const listStaffDocuments = (staffId: string) =>
+  prisma.staffDocument.findMany({
+    where: { staffId },
+    orderBy: [{ category: "asc" }, { createdAt: "desc" }],
+    select: documentSelect,
+  });
+
+export async function getStaffDocument(staffId: string, docId: string) {
+  // Scoped by staffId as well as id, so a document reference from one
+  // employee's file can't be replayed against another's.
+  const doc = await prisma.staffDocument.findFirst({ where: { id: docId, staffId } });
+  if (!doc) throw ApiError.notFound("Document");
+  const stored = await documentStore.get(DOCUMENTS, doc.fileRef);
+  if (!stored) throw ApiError.notFound("Document");
+  return {
+    name: doc.fileName,
+    type: doc.fileType,
+    buffer: Buffer.from((stored.data as string) ?? "", "base64"),
+  };
+}
+
+/** Re-file under another category, correct the label, set/clear an expiry. */
+export async function updateStaffDocument(
+  staffId: string,
+  docId: string,
+  input: { label?: string; category?: string; expiresAt?: Date; note?: string; clearExpiry?: boolean },
+) {
+  const doc = await prisma.staffDocument.findFirst({ where: { id: docId, staffId } });
+  if (!doc) throw ApiError.notFound("Document");
+  return prisma.staffDocument.update({
+    where: { id: docId },
+    data: {
+      ...(input.label !== undefined ? { label: input.label } : {}),
+      ...(input.category !== undefined ? { category: input.category } : {}),
+      ...(input.note !== undefined ? { note: input.note || null } : {}),
+      ...(input.clearExpiry ? { expiresAt: null } : input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),
+    },
+    select: documentSelect,
+  });
+}
+
+export async function removeStaffDocument(staffId: string, docId: string) {
+  const doc = await prisma.staffDocument.findFirst({ where: { id: docId, staffId } });
+  if (!doc) throw ApiError.notFound("Document");
+  await prisma.staffDocument.delete({ where: { id: docId } });
+  return { id: docId, label: doc.label };
+}
+
+/**
+ * Compliance chase-list: documents already expired or lapsing inside the
+ * warning window, newest deadline first. This is what turns a filing cabinet
+ * into something HR can act on — an expired work permit is a legal problem,
+ * not a missing attachment.
+ */
+export async function expiringStaffDocuments(withinDays = STAFF_DOCUMENT_EXPIRY_WARNING_DAYS) {
+  const horizon = new Date(Date.now() + withinDays * 24 * 60 * 60 * 1000);
+  const docs = await prisma.staffDocument.findMany({
+    where: { expiresAt: { not: null, lte: horizon } },
+    orderBy: { expiresAt: "asc" },
+    select: {
+      ...documentSelect,
+      staff: {
+        select: {
+          id: true, staffNo: true, designation: true,
+          user: { select: { firstName: true, lastName: true } },
+        },
+      },
+    },
+  });
+  const now = Date.now();
+  return docs.map((d) => ({
+    ...d,
+    staffName: `${d.staff.user.firstName} ${d.staff.user.lastName}`,
+    expired: !!d.expiresAt && d.expiresAt.getTime() < now,
+  }));
 }

@@ -290,14 +290,19 @@ export async function createStudent(input: CreateStudentInput) {
     // Enroll into a class for the active academic year, if requested.
     let className: string | undefined;
     if (classRoomId) {
-      const classRoom = await tx.classRoom.findUnique({
-        where: { id: classRoomId },
-        include: { _count: { select: { enrollments: true } } },
-      });
+      const classRoom = await tx.classRoom.findUnique({ where: { id: classRoomId } });
       if (!classRoom) throw ApiError.notFound("Class room");
-      if (classRoom._count.enrollments >= classRoom.capacity) {
+      if (classRoom.gradeLevel !== student.gradeLevel) {
         throw ApiError.badRequest(
-          `${classRoom.name} is full (${classRoom._count.enrollments}/${classRoom.capacity} students) — pick another section or raise its capacity`,
+          `${classRoom.name} is a grade ${classRoom.gradeLevel} section but this student is in grade ${student.gradeLevel} — ` +
+          `pick a section of grade ${student.gradeLevel}`,
+        );
+      }
+      // Withdrawn enrollments are not occupants — see occupancyOf().
+      const taken = await tx.enrollment.count({ where: { classRoomId, status: { not: "WITHDRAWN" } } });
+      if (taken >= classRoom.capacity) {
+        throw ApiError.badRequest(
+          `${classRoom.name} is full (${taken}/${classRoom.capacity} students) — pick another section or raise its capacity`,
         );
       }
       await tx.enrollment.create({
@@ -330,27 +335,71 @@ export async function createStudent(input: CreateStudentInput) {
   return student;
 }
 
+/**
+ * Seats actually taken in a class. Withdrawn enrollments are not occupants —
+ * counting them would make a class look full while empty desks sit in it.
+ */
+const occupancyOf = (classRoomId: string) =>
+  prisma.enrollment.count({ where: { classRoomId, status: { not: "WITHDRAWN" } } });
+
+/**
+ * Move a student into a class — the registrar's "change this student's
+ * section" (Grade 5 — A → Grade 5 — B), and the same path used when a
+ * student is admitted straight into a class.
+ *
+ * A student holds one enrollment per academic year (enforced by a unique
+ * index), so switching section UPDATES that row rather than adding another:
+ * the child is never in two sections of the same year at once.
+ */
+export async function placeStudentInClass(studentId: string, classRoomId: string, gradeLevel: string) {
+  const classRoom = await prisma.classRoom.findUnique({ where: { id: classRoomId } });
+  if (!classRoom) throw ApiError.notFound("Class room");
+
+  // A Grade 5 pupil does not belong in a Grade 7 section. Grade and class
+  // are edited on the same form, so the fix is one dropdown away — say which
+  // two values disagree rather than silently filing the mismatch.
+  if (classRoom.gradeLevel !== gradeLevel) {
+    throw ApiError.badRequest(
+      `${classRoom.name} is a grade ${classRoom.gradeLevel} section but this student is in grade ${gradeLevel} — ` +
+      `change the grade level too, or pick a section of grade ${gradeLevel}`,
+    );
+  }
+
+  const current = await prisma.enrollment.findUnique({
+    where: { studentId_academicYearId: { studentId, academicYearId: classRoom.academicYearId } },
+    include: { classRoom: { select: { id: true, name: true } } },
+  });
+  if (current?.classRoomId === classRoomId) {
+    return { moved: false, from: current.classRoom.name, to: classRoom.name };
+  }
+
+  // Only a genuine arrival consumes a seat; a student already in this class
+  // is excluded above, so any move here is a net +1 for the target.
+  const taken = await occupancyOf(classRoomId);
+  if (taken >= classRoom.capacity) {
+    throw ApiError.badRequest(
+      `${classRoom.name} is full (${taken}/${classRoom.capacity} students) — pick another section or raise its capacity`,
+    );
+  }
+
+  await prisma.enrollment.upsert({
+    where: { studentId_academicYearId: { studentId, academicYearId: classRoom.academicYearId } },
+    create: { studentId, classRoomId, academicYearId: classRoom.academicYearId },
+    // The roll number belonged to the old section's register, so it is
+    // cleared on the way out instead of following the student and colliding.
+    update: { classRoomId, rollNo: null },
+  });
+  return { moved: true, from: current?.classRoom.name ?? null, to: classRoom.name };
+}
+
 export async function updateStudent(id: string, input: Record<string, unknown>) {
   const { classRoomId, ...data } = input as { classRoomId?: string } & Record<string, unknown>;
   const student = await prisma.student.update({ where: { id }, data });
 
   if (classRoomId) {
-    const classRoom = await prisma.classRoom.findUnique({
-      where: { id: classRoomId },
-      include: { _count: { select: { enrollments: true } } },
-    });
-    if (!classRoom) throw ApiError.notFound("Class room");
-    const alreadyHere = await prisma.enrollment.findFirst({ where: { studentId: id, classRoomId } });
-    if (!alreadyHere && classRoom._count.enrollments >= classRoom.capacity) {
-      throw ApiError.badRequest(
-        `${classRoom.name} is full (${classRoom._count.enrollments}/${classRoom.capacity} students) — pick another section or raise its capacity`,
-      );
-    }
-    await prisma.enrollment.upsert({
-      where: { studentId_academicYearId: { studentId: id, academicYearId: classRoom.academicYearId } },
-      create: { studentId: id, classRoomId, academicYearId: classRoom.academicYearId },
-      update: { classRoomId },
-    });
+    // Validated against the grade the student now has, so changing grade and
+    // section in one save is a single consistent move.
+    await placeStudentInClass(id, classRoomId, student.gradeLevel);
   }
   return student;
 }
@@ -483,25 +532,36 @@ export async function unassignedStudents(academicYearId: string, gradeLevel?: st
  * that year are simply moved to this class.
  */
 export async function bulkEnroll(input: BulkEnrollInput) {
-  const classRoom = await prisma.classRoom.findUnique({
-    where: { id: input.classRoomId },
-    include: { _count: { select: { enrollments: true } } },
-  });
+  const classRoom = await prisma.classRoom.findUnique({ where: { id: input.classRoomId } });
   if (!classRoom) throw ApiError.notFound("Class room");
-
-  const newSeats = input.studentIds.length;
-  if (classRoom._count.enrollments + newSeats > classRoom.capacity) {
-    throw ApiError.badRequest(
-      `${classRoom.name} has ${classRoom.capacity - classRoom._count.enrollments} free seat(s) — cannot add ${newSeats} student(s)`,
-    );
-  }
 
   const students = await prisma.student.findMany({
     where: { id: { in: input.studentIds }, status: "ACTIVE" },
-    select: { id: true },
+    select: { id: true, gradeLevel: true },
   });
   if (students.length !== input.studentIds.length) {
     throw ApiError.badRequest("One or more selected students are not active");
+  }
+  const wrongGrade = students.filter((s) => s.gradeLevel !== classRoom.gradeLevel);
+  if (wrongGrade.length > 0) {
+    throw ApiError.badRequest(
+      `${classRoom.name} is a grade ${classRoom.gradeLevel} section, but ${wrongGrade.length} selected ` +
+      `student(s) are in another grade — move them to a section of their own grade`,
+    );
+  }
+
+  // Only students not already sitting in this class take a new seat, so
+  // re-running a partly-done assignment doesn't report a phantom overflow.
+  const alreadyHere = await prisma.enrollment.findMany({
+    where: { classRoomId: classRoom.id, studentId: { in: input.studentIds } },
+    select: { studentId: true },
+  });
+  const newSeats = input.studentIds.length - alreadyHere.length;
+  const taken = await occupancyOf(classRoom.id);
+  if (taken + newSeats > classRoom.capacity) {
+    throw ApiError.badRequest(
+      `${classRoom.name} has ${Math.max(0, classRoom.capacity - taken)} free seat(s) — cannot add ${newSeats} student(s)`,
+    );
   }
 
   await prisma.$transaction(
@@ -509,7 +569,8 @@ export async function bulkEnroll(input: BulkEnrollInput) {
       prisma.enrollment.upsert({
         where: { studentId_academicYearId: { studentId, academicYearId: classRoom.academicYearId } },
         create: { studentId, classRoomId: classRoom.id, academicYearId: classRoom.academicYearId },
-        update: { classRoomId: classRoom.id },
+        // Moving between sections invalidates the old register position.
+        update: { classRoomId: classRoom.id, rollNo: null },
       }),
     ),
   );
