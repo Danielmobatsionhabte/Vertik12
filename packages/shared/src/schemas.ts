@@ -692,6 +692,15 @@ export const schoolSettingsSchema = z.object({
   passwordMinLength: z.coerce.number().int().min(8).max(64),
   sessionTimeoutMinutes: z.coerce.number().int().min(5).max(720),
   yearlyDiscountPercent: z.coerce.number().min(0).max(100),
+  /**
+   * Master switch for the public "Register" form on the landing page. The
+   * admission window is a season, not a permanent state — the admin opens
+   * it when intake starts and closes it when the period is over, at which
+   * point the public form stops accepting submissions entirely.
+   */
+  onlineRegistrationOpen: z.boolean().default(false),
+  /** Shown to families on the public form (deadline, required papers…). */
+  onlineRegistrationNote: safeText(1_000, 0).optional().or(z.literal("")),
 });
 export type SchoolSettingsInput = z.infer<typeof schoolSettingsSchema>;
 
@@ -838,6 +847,52 @@ export const studentPhotoSchema = z.object({
     .regex(/^[A-Za-z0-9+/=]+$/, "Invalid file data"),
 });
 export type StudentPhotoInput = z.infer<typeof studentPhotoSchema>;
+
+// ---------- public (parent) registration ----------
+
+/**
+ * A family registering their own child from the public site, with no
+ * account and no session. It is the registrar's admission form minus the
+ * decisions that belong to the school (class placement, status), plus the
+ * files carried in the same request — an anonymous submitter cannot make
+ * the follow-up upload calls the staff form makes.
+ *
+ * Everything lands as a PENDING student for a registrar to review.
+ */
+export const PUBLIC_REGISTRATION_MAX_DOCUMENTS = 6;
+
+/**
+ * Ceiling on the encoded bytes in one submission, kept under the API's 8 MB
+ * body cap so an over-stuffed form gets this explained rejection instead of
+ * the body parser's bare 413.
+ */
+export const PUBLIC_REGISTRATION_MAX_UPLOAD_BYTES = 7 * 1024 * 1024;
+
+export const publicRegistrationSchema = createStudentSchema
+  // Placement is the registrar's call once the application is approved.
+  .omit({ classRoomId: true, guardians: true })
+  .extend({
+    /**
+     * Families are asked outright whether the child already attends the
+     * school, so a returning pupil's paperwork is matched to the record
+     * that exists instead of being filed as a duplicate admission.
+     */
+    isReturning: z.boolean().default(false),
+    /** The child's existing admission number, when the family has it. */
+    priorAdmissionNo: safeText(40, 0).optional(),
+    // Unlike staff admission, a family must name at least one guardian —
+    // there is no front-office record to fall back on.
+    guardians: z.array(guardianSchema).min(1, "At least one parent/guardian is required").max(6),
+    photo: studentPhotoSchema.optional(),
+    documents: z.array(studentDocumentSchema).max(PUBLIC_REGISTRATION_MAX_DOCUMENTS).default([]),
+  })
+  .refine(
+    (v) =>
+      (v.photo?.dataBase64.length ?? 0) + v.documents.reduce((n, d) => n + d.attachment.dataBase64.length, 0) <=
+      Math.ceil((PUBLIC_REGISTRATION_MAX_UPLOAD_BYTES * 4) / 3),
+    { message: "The photo and documents are too large together — remove one or upload smaller scans", path: ["documents"] },
+  );
+export type PublicRegistrationInput = z.infer<typeof publicRegistrationSchema>;
 
 // ---------- list queries ----------
 export const paginationSchema = z.object({

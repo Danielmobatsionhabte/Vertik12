@@ -190,6 +190,7 @@ export async function updateSettings(input: SchoolSettingsInput) {
     address: input.address || null,
     phone: input.phone || null,
     email: input.email || null,
+    onlineRegistrationNote: input.onlineRegistrationNote || null,
   };
   return prisma.schoolSettings.upsert({
     where: { id: "school" },

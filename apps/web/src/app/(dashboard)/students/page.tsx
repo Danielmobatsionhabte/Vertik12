@@ -4,9 +4,10 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import type { Paginated } from "@vertik12/shared";
+import { STUDENT_STATUSES } from "@vertik12/shared";
 import { get, post, patch, getSession, ApiClientError } from "@/lib/api";
 import { useGrades } from "@/lib/grades";
-import { formatDate, fullName, gradeLabel } from "@/lib/format";
+import { formatDate, fullName, gradeLabel, humanize } from "@/lib/format";
 import { Badge, Button, Card, ErrorNote, Field, Input, Modal, PageHeader, Select, Spinner } from "@/components/ui";
 import { DataTable, Pager } from "@/components/data-table";
 
@@ -19,6 +20,9 @@ interface StudentRow {
   gender: string;
   status: string;
   admittedAt: string;
+  /** OFFICE = filed by staff, ONLINE = the family's own registration. */
+  registrationSource: string;
+  isReturning: boolean;
   enrollments: Array<{ classRoom: { name: string } }>;
 }
 
@@ -33,8 +37,12 @@ export default function StudentsPage() {
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
   const [gradeLevel, setGradeLevel] = useState("");
+  const [status, setStatus] = useState("");
   const [classRoomId, setClassRoomId] = useState("");
   const [yearId, setYearId] = useState("");
+  // Online registrations wait in PENDING until a registrar acts on them, so
+  // the queue is surfaced on the list rather than left to be discovered.
+  const [pendingCount, setPendingCount] = useState(0);
   const [sort, setSort] = useState("recent");
   const [classes, setClasses] = useState<ClassOption[]>([]);
   const [years, setYears] = useState<YearOption[]>([]);
@@ -61,14 +69,19 @@ export default function StudentsPage() {
     const params = new URLSearchParams({ page: String(page), pageSize: "20", sort });
     if (search) params.set("search", search);
     if (gradeLevel) params.set("gradeLevel", gradeLevel);
+    if (status) params.set("status", status);
     if (classRoomId) params.set("classRoomId", classRoomId);
     if (yearId) params.set("academicYearId", yearId);
     try {
       setData(await get<Paginated<StudentRow>>(`/students?${params}`));
+      // One extra count, not a second list: page 1 of size 1 is only ever
+      // read for its total.
+      const pending = await get<Paginated<StudentRow>>("/students?status=PENDING&pageSize=1");
+      setPendingCount(pending.total);
     } finally {
       setLoading(false);
     }
-  }, [page, search, gradeLevel, classRoomId, yearId, sort]);
+  }, [page, search, gradeLevel, status, classRoomId, yearId, sort]);
 
   useEffect(() => {
     // Debounce so typing in the search box doesn't fire a request per key.
@@ -98,6 +111,27 @@ export default function StudentsPage() {
         }
       />
 
+      {/* Families' own online registrations queue up here; one click filters
+          the list down to exactly the records waiting on a decision. */}
+      {canManage && pendingCount > 0 && status !== "PENDING" && (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+          <p className="text-sm text-amber-800">
+            <span className="font-semibold">{pendingCount} registration(s) awaiting review</span>
+            {" "}— submitted online by parents. They are not admitted until you change their status.
+          </p>
+          <Button
+            variant="secondary"
+            className="!py-1.5 text-xs"
+            onClick={() => {
+              setStatus("PENDING");
+              setPage(1);
+            }}
+          >
+            Review them
+          </Button>
+        </div>
+      )}
+
       <Card>
         <div className="flex flex-wrap gap-3 border-b border-slate-100 p-4">
           <Input
@@ -121,6 +155,21 @@ export default function StudentsPage() {
             {grades.map((g) => (
               <option key={g.code} value={g.code}>
                 {g.name}
+              </option>
+            ))}
+          </Select>
+          <Select
+            className="max-w-[190px]"
+            value={status}
+            onChange={(e) => {
+              setStatus(e.target.value);
+              setPage(1);
+            }}
+          >
+            <option value="">All statuses</option>
+            {STUDENT_STATUSES.map((s) => (
+              <option key={s} value={s}>
+                {s === "PENDING" ? "Pending review" : humanize(s)}
               </option>
             ))}
           </Select>
@@ -177,7 +226,19 @@ export default function StudentsPage() {
           emptyHint="Try clearing the search or admit a new student."
           columns={[
             { header: "Admission No", cell: (s) => <span className="font-mono text-xs">{s.admissionNo}</span> },
-            { header: "Name", cell: (s) => <span className="font-medium text-slate-900">{fullName(s)}</span> },
+            {
+              header: "Name",
+              cell: (s) => (
+                <span className="flex items-center gap-2">
+                  <span className="font-medium text-slate-900">{fullName(s)}</span>
+                  {/* Where the record came from matters while reviewing: an
+                      online form was filled in by the family, unverified. */}
+                  {s.registrationSource === "ONLINE" && (
+                    <Badge tone="brand">{s.isReturning ? "ONLINE · RETURNING" : "ONLINE"}</Badge>
+                  )}
+                </span>
+              ),
+            },
             { header: "Grade", cell: (s) => gradeLabel(s.gradeLevel) },
             { header: "Class", cell: (s) => s.enrollments[0]?.classRoom.name ?? "—" },
             { header: "Gender", cell: (s) => <span className="capitalize">{s.gender.toLowerCase()}</span> },

@@ -32,6 +32,11 @@ interface StudentProfile {
   gender: string;
   gradeLevel: string;
   status: string;
+  /** OFFICE = filed by staff, ONLINE = registered by the family themselves. */
+  registrationSource: string;
+  /** The family said this child already attends the school. */
+  isReturning: boolean;
+  priorAdmissionNo?: string | null;
   addressLine2?: string | null;
   city?: string | null;
   state?: string | null;
@@ -84,6 +89,7 @@ function StudentProfileView({ id }: { id: string }) {
   >(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [photoBusy, setPhotoBusy] = useState(false);
+  const [reviewing, setReviewing] = useState(false);
   const [photoVersion, setPhotoVersion] = useState(0);
   const [webcamFor, setWebcamFor] = useState<"photo" | "doc" | null>(null);
   const [docs, setDocs] = useState<Array<{ id: string; label: string; fileName: string; fileType: string; createdAt: string }> | null>(null);
@@ -169,6 +175,33 @@ function StudentProfileView({ id }: { id: string }) {
     }
   }
 
+  /**
+   * Registrar/admin decision on a pending registration. Admitting is exactly
+   * the status change the edit dialog offers — it is on the banner too
+   * because that is the one action the record is waiting for.
+   */
+  async function decide(status: "ACTIVE" | "WITHDRAWN") {
+    const admitting = status === "ACTIVE";
+    if (!window.confirm(
+      admitting
+        ? "Admit this student? They become an active student and will appear in enrolment, billing and reports."
+        : "Decline this registration? The record is kept and marked withdrawn, so nothing is lost.",
+    )) return;
+    setReviewing(true);
+    setNotice(null);
+    try {
+      await patch(`/students/${id}`, { status });
+      setNotice(admitting
+        ? "Student admitted — the record is now active. Assign a class next if one hasn't been set."
+        : "Registration declined and marked withdrawn.");
+      await load();
+    } catch (err) {
+      setNotice(err instanceof ApiClientError ? err.message : "Failed to update the registration");
+    } finally {
+      setReviewing(false);
+    }
+  }
+
   async function removePhoto() {
     if (!window.confirm("Remove this student's photo?")) return;
     setPhotoBusy(true);
@@ -222,6 +255,36 @@ function StudentProfileView({ id }: { id: string }) {
       {notice && (
         <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
           {notice} <button className="ml-2 underline" onClick={() => setNotice(null)}>Dismiss</button>
+        </div>
+      )}
+
+      {/* A registration that is still waiting on a decision. Until the status
+          changes the child is not a student anywhere in the system: no fees,
+          no dashboard count, no year rollover. */}
+      {student.status === "PENDING" && canManage && (
+        <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="text-sm text-amber-800">
+              <p className="font-semibold">
+                Registration pending review
+                {student.registrationSource === "ONLINE" && " — submitted online by the family"}
+              </p>
+              <p className="mt-1 text-xs">
+                {student.isReturning
+                  ? `The family says this child already attends the school${student.priorAdmissionNo ? ` under admission number ${student.priorAdmissionNo}` : ""} — check the existing record before admitting, so the file isn't duplicated.`
+                  : "A new applicant. Check the details and uploaded documents below, then admit or decline."}
+                {" "}Nothing is billed and no place is held while the registration is pending.
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <Button className="!py-1.5 text-xs" loading={reviewing} onClick={() => void decide("ACTIVE")}>
+                Admit student
+              </Button>
+              <Button variant="danger" className="!py-1.5 text-xs" loading={reviewing} onClick={() => void decide("WITHDRAWN")}>
+                Decline
+              </Button>
+            </div>
+          </div>
         </div>
       )}
 

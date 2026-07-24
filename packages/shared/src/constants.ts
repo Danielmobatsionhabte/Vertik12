@@ -143,8 +143,18 @@ export const COUNTRIES = [
 export const GENDERS = ["MALE", "FEMALE", "OTHER"] as const;
 export type Gender = (typeof GENDERS)[number];
 
-export const STUDENT_STATUSES = ["ACTIVE", "GRADUATED", "TRANSFERRED", "WITHDRAWN", "SUSPENDED"] as const;
+/**
+ * PENDING is where a family's own online registration lands: the record
+ * exists and is reviewable, but the child is not a student yet — every
+ * ACTIVE-only query (dashboard counts, fee generation, payment collection,
+ * year rollover) skips them until a registrar or admin promotes the record.
+ */
+export const STUDENT_STATUSES = ["PENDING", "ACTIVE", "GRADUATED", "TRANSFERRED", "WITHDRAWN", "SUSPENDED"] as const;
 export type StudentStatus = (typeof STUDENT_STATUSES)[number];
+
+/** Who filed the record: the front office, or the family on the public site. */
+export const REGISTRATION_SOURCES = ["OFFICE", "ONLINE"] as const;
+export type RegistrationSource = (typeof REGISTRATION_SOURCES)[number];
 
 export const STAFF_TYPES = ["TEACHING", "NON_TEACHING"] as const;
 export type StaffType = (typeof STAFF_TYPES)[number];

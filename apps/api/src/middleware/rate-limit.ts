@@ -105,6 +105,23 @@ export const refreshRateLimit = rateLimit({
 });
 
 /**
+ * Public registration: 5 submissions / hour per IP, then an hour's lockout.
+ * The form is open to the internet and every accepted submission writes a
+ * student record plus uploads, so this is the cap that keeps a scripted
+ * flood from filling the registrar's review queue. A family registering
+ * several children stays well inside it; keyed by IP alone because an
+ * anonymous submitter has no account to key on.
+ */
+export const registrationRateLimit = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  blockMs: 60 * 60 * 1000,
+  keyPrefix: "registration",
+  keyFn: (req) => `registration:${req.ip}`,
+  message: "Too many registrations from this connection. Please wait an hour, or contact the school office.",
+});
+
+/**
  * Password change verifies the CURRENT password, so it's a brute-force
  * surface too: 5 attempts / 15 min, keyed by the signed-in user (falls back
  * to IP before auth runs).
