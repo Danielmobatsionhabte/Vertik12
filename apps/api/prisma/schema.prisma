@@ -77,7 +77,16 @@ model Student {
   dateOfBirth  DateTime
   gender       String // MALE | FEMALE | OTHER
   gradeLevel   String // K | 1..12
-  status       String    @default("ACTIVE") // ACTIVE | GRADUATED | TRANSFERRED | WITHDRAWN | SUSPENDED
+  status       String    @default("ACTIVE") // PENDING | ACTIVE | GRADUATED | TRANSFERRED | WITHDRAWN | SUSPENDED
+  /// OFFICE = filed by a registrar/admin, ONLINE = the family's own public
+  /// registration (which always lands as PENDING for review).
+  registrationSource String @default("OFFICE")
+  /// The family declared this child already attends the school, so the
+  /// registrar reconciles the submission with the existing record rather
+  /// than admitting a duplicate.
+  isReturning        Boolean @default(false)
+  /// Admission number the family quoted for a returning child, if any.
+  priorAdmissionNo   String?
   email        String?
   phone        String?
   // Full postal address — every part optional.
@@ -784,6 +793,12 @@ model SchoolSettings {
   /// administration locks the curriculum once it is complete and re-opens
   /// editing when revisions are allowed. Admins are never locked out.
   lessonPlansLocked     Boolean @default(false)
+  /// Admission season switch: when true the public landing page shows a
+  /// "Register" button and the family-facing form accepts submissions.
+  /// The admin closes it again once the registration period is over.
+  onlineRegistrationOpen Boolean @default(false)
+  /// Guidance shown on the public form (deadline, papers to have ready…).
+  onlineRegistrationNote String?
   updatedAt             DateTime @updatedAt
 }
 

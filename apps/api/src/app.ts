@@ -23,6 +23,7 @@ import { assignmentsRouter } from "./modules/assignments/assignments.routes";
 import { lessonPlansRouter } from "./modules/lesson-plans/lesson-plans.routes";
 import { calendarRouter } from "./modules/calendar/calendar.routes";
 import { scheduleRouter } from "./modules/schedule/schedule.routes";
+import { registrationRouter } from "./modules/registration/registration.routes";
 import { auditLogger } from "./middleware/audit";
 
 export function createApp() {
@@ -52,6 +53,10 @@ export function createApp() {
     // Staff registration can carry several HR documents (ID, background
     // check, work permit) in one request, plus the per-document uploads.
     "/api/v1/staff",
+    // A family's public registration carries the child's photo and every
+    // supporting document in ONE request — an anonymous submitter has no
+    // session to make the follow-up upload calls the staff form makes.
+    "/api/v1/registration",
   ];
   app.use((req, res, next) => {
     if (req.originalUrl === "/api/v1/finance/payments/webhook") return next();
@@ -66,6 +71,8 @@ export function createApp() {
   const api = express.Router();
   api.use(auditLogger); // audit trail for every mutating call (Super Admin › Audit Logs)
   api.use("/auth", authRouter);
+  // Public admissions — no authenticate guard, by design (see the module).
+  api.use("/registration", registrationRouter);
   api.use("/students", studentsRouter);
   api.use("/staff", staffRouter);
   api.use("/academics", academicsRouter);

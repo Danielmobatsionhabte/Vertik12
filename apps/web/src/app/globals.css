@@ -68,16 +68,120 @@ html {
   }
 }
 
+/* ==========================================================================
+   Landing-page campus scene
+   The students walking across the hero, the school things drifting up behind
+   them, and the pointer parallax that ties the layers together. All of it is
+   decoration: pure CSS transforms on inline SVG, no images and no library, so
+   it costs nothing to load and drops out entirely under reduced motion.
+   ========================================================================== */
+
+/* Walk cycles start off-canvas on either side so nobody pops into existence. */
+@keyframes v-walk-right {
+  from { transform: translate3d(-25vw, 0, 0); }
+  to   { transform: translate3d(125vw, 0, 0); }
+}
+@keyframes v-walk-left {
+  /* scaleX(-1) turns the figure around; it has to live in the keyframe
+     because a transform on the same element would otherwise replace it. */
+  from { transform: translate3d(125vw, 0, 0) scaleX(-1); }
+  to   { transform: translate3d(-25vw, 0, 0) scaleX(-1); }
+}
+
+/* The little vertical bounce of a walking body, on an inner wrapper so it
+   composes with the horizontal travel above rather than fighting it. */
+@keyframes v-step {
+  0%, 100% { transform: translateY(0) rotate(-0.6deg); }
+  50%      { transform: translateY(-3.5%) rotate(0.6deg); }
+}
+
+/* Arms and legs swing in opposite phase — one keyframe each, offset by the
+   alternate version rather than a negative delay (Safari is happier). */
+@keyframes v-swing {
+  0%, 100% { transform: rotate(22deg); }
+  50%      { transform: rotate(-22deg); }
+}
+@keyframes v-swing-alt {
+  0%, 100% { transform: rotate(-22deg); }
+  50%      { transform: rotate(22deg); }
+}
+
+/* Books, caps and pencils rising slowly through the backdrop. */
+@keyframes v-drift {
+  0%   { opacity: 0; transform: translate3d(0, 12vh, 0) rotate(0deg) scale(0.85); }
+  12%  { opacity: 1; }
+  85%  { opacity: 1; }
+  100% { opacity: 0; transform: translate3d(2vw, -95vh, 0) rotate(220deg) scale(1.1); }
+}
+
+/* Limbs pivot at the shoulder/hip: fill-box makes the origin relative to the
+   drawn path itself, so 50% 6% sits at the top of each limb. */
+.v-limb {
+  transform-box: fill-box;
+  transform-origin: 50% 6%;
+}
+.v-walker {
+  position: absolute;
+  bottom: 0;
+  animation: v-walk-right linear infinite;
+  will-change: transform;
+}
+.v-walker-left {
+  animation-name: v-walk-left;
+}
+.v-body {
+  animation: v-step ease-in-out infinite;
+}
+.v-arm { animation: v-swing ease-in-out infinite; }
+.v-arm-back { animation: v-swing-alt ease-in-out infinite; }
+.v-leg { animation: v-swing-alt ease-in-out infinite; }
+.v-leg-back { animation: v-swing ease-in-out infinite; }
+/* Each glyph is placed with inline left/bottom; the drift keyframe carries it
+   up from there, so the authored spot is also where it rests when motion is
+   switched off. */
+.v-glyph {
+  position: absolute;
+  animation: v-drift linear infinite;
+  will-change: transform, opacity;
+}
+
+/* Pointer parallax: the page writes --v-px/--v-py (roughly -1…1) and each
+   layer multiplies them by its own depth, so nearer layers travel further. */
+.v-parallax {
+  transform: translate3d(calc(var(--v-px, 0) * var(--v-depth, 0) * 1px), calc(var(--v-py, 0) * var(--v-depth, 0) * 1px), 0);
+  transition: transform 400ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
 /* Users who ask for reduced motion get the landing/login pages static. */
 @media (prefers-reduced-motion: reduce) {
   .animate-fade-up,
   .animate-float,
-  .animate-gradient-pan {
+  .animate-gradient-pan,
+  .v-walker,
+  .v-body,
+  .v-arm,
+  .v-arm-back,
+  .v-leg,
+  .v-leg-back,
+  .v-glyph {
     animation: none;
   }
   .animate-fade-up {
     opacity: 1;
     transform: none;
+  }
+  /* Frozen mid-scene rather than piled off-canvas: every piece keeps the
+     inline left/bottom it was authored at and simply stops moving. */
+  .v-walker,
+  .v-glyph {
+    transform: none;
+  }
+  .v-glyph {
+    opacity: 0.55;
+  }
+  .v-parallax {
+    transform: none;
+    transition: none;
   }
 }
 

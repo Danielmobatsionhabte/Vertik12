@@ -566,6 +566,8 @@ interface Settings {
   passwordMinLength: number;
   sessionTimeoutMinutes: number;
   yearlyDiscountPercent: number;
+  onlineRegistrationOpen: boolean;
+  onlineRegistrationNote?: string | null;
 }
 
 function SettingsTab() {
@@ -592,6 +594,7 @@ function SettingsTab() {
         address: form.address ?? "",
         phone: form.phone ?? "",
         email: form.email ?? "",
+        onlineRegistrationNote: form.onlineRegistrationNote ?? "",
       });
       setMessage("School settings saved.");
     } catch (err) {
@@ -634,6 +637,51 @@ function SettingsTab() {
               onChange={(e) => setForm((f) => (f ? { ...f, sessionTimeoutMinutes: Number(e.target.value) } : f))} />
           </Field>
         </div>
+      </Card>
+
+      {/* The admission window. Closing it takes the public form and the
+          landing page's "Register" button away in one switch — the school
+          controls exactly when families can register their children. */}
+      <Card className="space-y-4 p-6">
+        <h2 className="text-sm font-semibold text-slate-700">Online registration (admissions)</h2>
+        <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 p-4">
+          <input
+            type="checkbox"
+            className="mt-0.5 h-4 w-4"
+            checked={form.onlineRegistrationOpen}
+            onChange={(e) => setForm((f) => (f ? { ...f, onlineRegistrationOpen: e.target.checked } : f))}
+          />
+          <span>
+            <span className="block text-sm font-medium text-slate-800">Allow parents to register their children online</span>
+            <span className="mt-0.5 block text-xs text-slate-500">
+              While this is on, a “Register” button appears on the public home page and the registration form accepts
+              submissions. Every submission lands as a <span className="font-medium">Pending</span> student for the
+              registrar or an admin to review — it counts nowhere until its status is changed. Turn this off when the
+              registration period is over.
+            </span>
+          </span>
+        </label>
+        <div className={cx("flex items-center gap-2 text-xs", form.onlineRegistrationOpen ? "text-emerald-700" : "text-slate-500")}>
+          <Badge tone={form.onlineRegistrationOpen ? "green" : "gray"}>
+            {form.onlineRegistrationOpen ? "OPEN" : "CLOSED"}
+          </Badge>
+          {form.onlineRegistrationOpen
+            ? "Families can register right now."
+            : "The public form turns visitors away and tells them to contact the office."}
+        </div>
+        <Field
+          label="Message shown to families (optional)"
+          hint="Displayed on the public form and next to the home page's Register button — deadlines, which documents to have ready, who to call. Shown on the “closed” screen too."
+        >
+          <textarea
+            className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+            rows={3}
+            maxLength={1000}
+            value={form.onlineRegistrationNote ?? ""}
+            onChange={(e) => setForm((f) => (f ? { ...f, onlineRegistrationNote: e.target.value } : f))}
+            placeholder="e.g. Registration for the 2026/27 year closes on 30 August. Please have your child's birth certificate ready."
+          />
+        </Field>
       </Card>
 
       <Card className="space-y-4 p-6">

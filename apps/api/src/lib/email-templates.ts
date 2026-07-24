@@ -106,6 +106,37 @@ export function studentWelcomeEmail(p: {
   );
 }
 
+/**
+ * Confirms a family's own online registration. Deliberately not a welcome:
+ * the child is not admitted yet, so this says "received, under review" and
+ * hands over the reference the office will ask for.
+ */
+export function registrationReceivedEmail(p: {
+  studentName: string;
+  reference: string;
+  gradeLevel: string;
+  schoolName: string;
+}): string {
+  return emailLayout(
+    `We received your registration`,
+    `<p style="font-size:14px;color:#334155">
+       Thank you — ${esc(p.schoolName)} has received your registration for ${esc(p.studentName)}.
+       It is now with the registrar for review. Keep this email: quote the reference below
+       whenever you contact the school about this application.
+     </p>
+     ${detailsTable([
+       ["Reference", p.reference],
+       ["Student", p.studentName],
+       ["Grade applied for", p.gradeLevel],
+       ["Status", "Pending review"],
+     ])}
+     <p style="font-size:13px;color:#334155">
+       You will hear from the school once the registration has been reviewed. If any document is
+       missing, the office will get in touch using the contact details you provided.
+     </p>`,
+  );
+}
+
 export function parentPortalEmail(p: { firstName: string; email: string; temporaryPassword: string }): string {
   return emailLayout(
     `Your parent portal access`,
